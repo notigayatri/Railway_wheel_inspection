@@ -1,19 +1,23 @@
 # Chakraksh (चक्राक्ष) &mdash; Train-Wise Wheel Health Monitoring & Intelligent Maintenance Scheduling System
 
-> **v2.0** &mdash; Extended from the original Railway Wheel Health Assessment backend into an end-to-end Fleet Health, Computer Vision Defect Detection, and Intelligent Maintenance Scheduling Platform for railway operations.
+> **v2.0** &mdash; End-to-end Fleet Health, Computer Vision Defect Detection, and Intelligent Maintenance Scheduling Platform for railway rolling stock.
+>
+> 🚀 **Quick Start:** For step-by-step setup and execution instructions, please see the **[Complete How-To-Run Guide (how_to_run.md)](how_to_run.md)**.
 
 ---
 
 ## Table of Contents
 
+- 📖 **[Quick Start Guide & How to Run (how_to_run.md)](how_to_run.md)**
+- 📑 **[4 Additional Enterprise Features Guide (4 additional features.md)](4%20additional%20features.md)**
 1. [System Overview & Architecture](#1-system-overview--architecture)
 2. [Database Schema & Migrations](#2-database-schema--migrations)
-3. [Complete API Endpoints Reference](#3-complete-api-endpoints-reference)
+3. [Complete API Endpoints Reference (37 Routes)](#3-complete-api-endpoints-reference)
 4. [Live Machine Learning Inspection Pipeline](#4-live-machine-learning-inspection-pipeline)
 5. [Intelligent Maintenance Scheduling & Conflict Engine](#5-intelligent-maintenance-scheduling--conflict-engine)
 6. [Request & Response Examples](#6-request--response-examples)
 7. [Frontend Integration & UI Application](#7-frontend-integration--ui-application)
-8. [Testing & Verification Suites (129 Tests)](#8-testing--verification-suites-129-tests)
+8. [Testing & Verification Suites (164 Tests)](#8-testing--verification-suites-164-tests)
 9. [How to Start & Run Locally](#9-how-to-start--run-locally)
 10. [Windows Performance & Network Optimization](#10-windows-performance--network-optimization)
 
@@ -36,21 +40,27 @@ Fleet
 ### Directory Structure
 
 ```
-Railway_wheel_health_assessment/
-├── main.py                          # FastAPI application entry point (v2.0)
+Railway_wheel_inspection/
+├── main.py                          # FastAPI application entry point
+├── how_to_run.md                    # Step-by-step installation and running guide
+├── 4 additional features.md         # Documentation of 4 enterprise features
 ├── routers/
+│   ├── auth.py                      # JWT authentication & user session endpoints
 │   ├── trains.py                    # Train, coach, and wheel management APIs
 │   ├── schedules.py                 # Operating schedules & maintenance windows APIs
 │   ├── maintenance.py               # Maintenance recommendation & job lifecycle APIs
-│   └── fleet_dashboard.py          # Executive fleet dashboard & drill-down APIs
+│   ├── fleet_dashboard.py          # Executive fleet dashboard & drill-down APIs
+│   └── admin_backups.py             # Automated SQLite database backups & recovery APIs
 ├── core/wheel_lifecycle/
 │   ├── database.py                  # SQLite schema manager & automatic migrations
+│   ├── auth.py                      # Role-Based Access Control (RBAC) & token verification
+│   ├── backup.py                    # Zero-downtime online backup manager & safe restore
+│   ├── report_generator.py          # Work Order PDF & CSV report export generator
 │   ├── fleet_repository.py          # Fleet data access layer (trains, coaches, schedules, jobs)
 │   ├── repository.py                # Core Wheel & Inspection repository
 │   ├── models.py                    # Domain models (Wheel, Inspection, Defect)
 │   ├── id_generator.py              # Unique ID generators (WH000001, INS000001, EVT...)
-│   ├── history.py                   # Historical record manager
-│   └── dashboard.py                 # Legacy dashboard aggregation
+│   └── history.py                   # Historical record manager
 ├── maintenance_priority/
 │   ├── scheduler.py                 # Intelligent deterministic maintenance scheduler
 │   ├── risk_engine.py               # Multi-factor risk calculation engine
@@ -61,15 +71,20 @@ Railway_wheel_health_assessment/
 ├── reliability/                     # Test-Time Augmentation (TTA) prediction confidence
 ├── explainability/                  # Grad-CAM / Layer-CAM heatmap visualization generator
 ├── outputs/                         # Static outputs (annotated images, heatmaps, uploads)
-│   └── uploads/                     # Sample and uploaded test images
+│   └── evaluation/                  # YOLOv8 benchmark report and confusion matrices
 ├── database/railway.db              # SQLite persistence layer (auto-initialized)
+├── scripts/                         # Standalone CLI utilities (backup_db, evaluate_model)
 ├── frontend/                        # React + Vite web dashboard
 │   ├── src/                         # Dashboard, Trains, Inspect, Planner, Wheels pages
 │   ├── package.json                 # React 18, Vite, React Router, Recharts
 │   └── .env.example                 # Backend API URL configuration template
 └── tests/
     ├── test_fleet_system.py         # 25 pytest integration & unit tests
-    ├── test_api_endpoints.py        # 64 live HTTP validation tests (error codes, validation)
+    ├── test_api_endpoints.py        # 78 live HTTP validation tests (error codes, validation)
+    ├── verify_all_endpoints.py      # 46 live end-to-end tests (real YOLO image upload, scheduling)
+    ├── test_database_backup.py      # 9 SQLite online backup & restore tests
+    └── test_fast_mode.py            # 6 Fast Mode vs Deep Mode benchmark tests
+```─ test_api_endpoints.py        # 64 live HTTP validation tests (error codes, validation)
     ├── verify_all_endpoints.py      # 40 live end-to-end tests (real YOLO image upload, scheduling)
     └── test_*.py                    # Unit tests (models, database, ID generator, history)
 ```
@@ -171,6 +186,13 @@ The backend provides **34 active API routes**:
 | `GET` | `/api/admin/backups/{filename}/download` | Stream and download database snapshot file (`.db` or `.db.gz`) |
 | `POST` | `/api/admin/backups/{filename}/restore` | Restore live database from snapshot with automatic pre-restore safety backup |
 | `DELETE` | `/api/admin/backups/{filename}` | Delete a snapshot from the backup archive (Admin only) |
+
+### 3.7 Authentication & Role-Based Access Control (`routers/auth.py`)
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/auth/login` | Authenticate user via username & password; returns signed JWT Bearer token |
+| `GET` | `/api/auth/me` | Fetch active profile, role permissions, and token validation status |
+| `GET` | `/api/auth/users` | List all available system users, roles, and authorization levels |
 
 ---
 
@@ -580,17 +602,33 @@ python -m pytest tests/test_fleet_system.py -v
 
 ## 9. How to Start & Run Locally
 
-### 1. Install Dependencies
+> 💡 **For the full step-by-step setup walkthrough, prerequisites, and troubleshooting, read [HOW TO RUN (how_to_run.md)](how_to_run.md).**
+
+### Quick Launch
+
+Open two terminal windows:
+
+#### Terminal 1: Start the Backend (FastAPI)
 ```bash
+# 1. Install Python dependencies
 pip install -r requirements.txt
+
+# 2. Run backend server on 127.0.0.1:8000
+python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-### 2. Start the FastAPI Backend
+#### Terminal 2: Start the Frontend (Vite + React)
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+cd frontend
+
+# 1. Install frontend packages
+npm install
+
+# 2. Start Vite development server
+npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
-Browse to:
+- **Web Dashboard**: `http://127.0.0.1:5173`
 - **Interactive Swagger Docs**: `http://127.0.0.1:8000/docs`
 - **ReDoc Documentation**: `http://127.0.0.1:8000/redoc`
 - **Health Check**: `http://127.0.0.1:8000/api/health`
