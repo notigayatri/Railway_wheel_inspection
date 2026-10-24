@@ -472,16 +472,19 @@ async def inspect_wheel(
     except Exception:
         pass  # annotated image is non-critical
 
-    # ── 7. Grad-CAM / Layer-CAM (reserved for full TTA mode) ─────────────
+    # ── 7. Grad-CAM / Layer-CAM Explainability ───────────────────────────
     gradcam_path: Optional[str] = None
     gradcam_url: Optional[str] = None
-    if should_run_tta:
-        try:
-            gc_out = generate_gradcam(upload_path, output_path=GRADCAM_DIR / image.filename)
-            gradcam_path = str(gc_out)
-            gradcam_url = _url_for_file(gradcam_path)
-        except Exception:
-            pass  # Grad-CAM is non-critical; do not fail the whole request
+    try:
+        gc_out = generate_gradcam(
+            upload_path,
+            output_path=GRADCAM_DIR / image.filename,
+            yolo_result=yolo_result,
+        )
+        gradcam_path = str(gc_out)
+        gradcam_url = _url_for_file(gradcam_path)
+    except Exception as exc:
+        print(f"[WARN] Grad-CAM generation failed: {exc}")
 
     # ── 8. TTA Reliability (5 forward passes, skipped in Fast Mode) ───────
     reliability_results = {}

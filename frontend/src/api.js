@@ -353,25 +353,68 @@ export async function getServiceHistory(id) {
 
 /* ---------- inspection ---------- */
 export async function inspect(file, wheelId, coachId, runTta = false) {
-  if (MOCK) { await sleep(runTta ? 2500 : 700); return mockInspect(file, wheelId, coachId); }
-  const fd = new FormData();
-  fd.append("image", file);
-  if (wheelId) fd.append("wheel_id", wheelId);
-  if (coachId) fd.append("coach_id", coachId);
-  fd.append("run_tta", runTta ? "true" : "false");
-  const headers = {};
-  const token = getAuthToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const url = `${BASE}/api/inspect?run_tta=${runTta ? "true" : "false"}`;
-  const r = await fetch(url, { method: "POST", headers, body: fd }).catch(() => null);
-  if (!r) throw new Error(`Cannot reach the backend at ${BASE}. Is it running?`);
-  if (!r.ok) {
-    let detail = "";
-    try { const j = await r.json(); detail = typeof j.detail === "string" ? j.detail : ""; } catch { /* no body */ }
-    throw new Error(detail || `Inspection failed (${r.status}). Check that the backend is running.`);
+  // Always invoke the live backend ML model so YOLO bounding boxes & Grad-CAM attention heatmaps are rendered
+  try {
+    const fd = new FormData();
+    fd.append("image", file);
+    if (wheelId) fd.append("wheel_id", wheelId);
+    if (coachId) fd.append("coach_id", coachId);
+    fd.append("run_tta", runTta ? "true" : "false");
+    const headers = {};
+    const token = getAuthToken();
+    if (token && token !== "mock-jwt-token" && token !== "fallback-token") {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    const url = `${BASE}/api/inspect?run_tta=${runTta ? "true" : "false"}`;
+    const r = await fetch(url, { method: "POST", headers, body: fd });
+    if (r.ok) {
+      const data = await r.json();
+      // Keep existing frontend dataset and wheel history updated with the real AI findings
+      if (MOCK) {
+        let w = db.wheels.find((x) => x.asset_id === data.asset_id);
+        if (!w && wheelId) w = db.wheels.find((x) => x.asset_id === wheelId);
+        if (!w) w = addWheel({ coach_id: coachId, wheel_identifier: data.asset_id });
+        if (w) {
+          w.status = statusFor(data.wheel_risk_score);
+          w.inspection_count = (w.inspection_count || 0) + 1;
+        }
+        const top = data.defects?.[0] || { label: "None", severity: "Mild", recommended_action: "Monitor only" };
+        db.history[data.asset_id] = [
+          {
+            inspection_date: data.inspection_date,
+            label: top.label,
+            severity: top.severity,
+            risk_score: data.wheel_risk_score,
+            trend_status: data.trend_status,
+            recommended_action: data.wheel_recommended_action,
+          },
+          ...(db.history[data.asset_id] || []),
+        ];
+      }
+      return data;
+    }
+    // If domain guard rejected non-wheel image, pass through the informative error
+    if (r.status === 422) {
+      let detail = "";
+      try { const j = await r.json(); detail = typeof j.detail === "string" ? j.detail : ""; } catch {}
+      if (detail) throw new Error(detail);
+    }
+  } catch (err) {
+    if (err.message && err.message.includes("railway wheel")) {
+      throw err;
+    }
+    console.warn("Live inspection backend unreachable, falling back to local simulation:", err);
+    if (!MOCK) throw err;
   }
-  return r.json();
+
+  // Graceful fallback for offline demo simulation
+  if (MOCK) {
+    await sleep(runTta ? 2500 : 700);
+    return mockInspect(file, wheelId, coachId);
+  }
+  throw new Error(`Cannot reach the backend at ${BASE}. Is it running?`);
 }
+
 
 /* ---------- maintenance planner ---------- */
 export const getJobs = async () => (MOCK ? lag(() => db.jobs.map(normJob), 250) : asList(await req("/api/maintenance/jobs")).map(normJob));
@@ -457,8 +500,8 @@ export const getJobsCsvUrl = () => `${BASE}/api/maintenance/jobs/export/csv${aut
 export const getWheelCsvUrl = (wheelId) => `${BASE}/api/fleet/wheels/${wheelId}/export/csv${authQuery()}`;
 
 /* ---------- automated database backups ---------- */
-export const getBackupStatus = async () => req("/api/admin/backups/status");
-export const getBackups = async () => asList(await req("/api/admin/backups"));
+export const getBackupStatus = async () => (MOCK ? { status: "ACTIVE", interval_minutes: 360, retention_count: 20, backup_directory: "database/backups", total_backups: 3, disk_usage_bytes: 233472 } : req("/api/admin/backups/status"));
+export const getBackups = async () => (MOCK ? [] : asList(await req("/api/admin/backups")));
 export const triggerBackup = async (compress = false) => req(`/api/admin/backups?compress=${compress}&reason=dashboard_ui`, { method: "POST" });
 export const getBackupDownloadUrl = (filename) => `${BASE}/api/admin/backups/${encodeURIComponent(filename)}/download${authQuery()}`;
 export const restoreBackup = async (filename) => req(`/api/admin/backups/${encodeURIComponent(filename)}/restore`, { method: "POST" });

@@ -66,7 +66,8 @@ const TEST_SAMPLES = [
 function Viewer({ res, preview }) {
   const [tab, setTab] = useState("det");
   // Prefer the real backend-generated image; fall back to local preview only if URL is null
-  const backendSrc = imgUrl(tab === "det" ? res.annotated_image_url : res.gradcam_image_url);
+  const rawBackendSrc = imgUrl(tab === "det" ? res.annotated_image_url : res.gradcam_image_url);
+  const backendSrc = rawBackendSrc ? `${rawBackendSrc}?t=${encodeURIComponent(res.inspection_date || res.inspection_id || "")}` : null;
   const src = backendSrc || preview;
   const hasGradcam = !!res.gradcam_image_url;
   return (
@@ -82,12 +83,10 @@ function Viewer({ res, preview }) {
           <p className="muted">No {tab === "det" ? "annotated" : "Grad-CAM"} image was generated for this inspection.</p>
         )}
       </div>
-      {tab === "cam" && hasGradcam && <p className="muted small">The heatmap shows where the model looked. It does not outline the exact defect boundary.</p>}
+      {tab === "cam" && hasGradcam && <p className="muted small">Layer-CAM Explainability: The heatmap highlights high-activation regions (warm red/yellow colors) that drove the model's defect diagnosis.</p>}
       {tab === "cam" && !hasGradcam && (
         <p className="muted small">
-          {res.run_tta === false
-            ? "Layer-CAM heatmap was skipped in Fast Screening Mode to maximize throughput. Toggle 'Deep Diagnostic Mode' or escalate above to generate attention heatmaps."
-            : "Grad-CAM heatmap was not generated. The backend may have encountered an error during generation."}
+          Layer-CAM heatmap was not generated for this inspection.
         </p>
       )}
     </section>
