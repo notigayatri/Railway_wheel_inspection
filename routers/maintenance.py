@@ -16,13 +16,16 @@ GET    /api/trains/{train_id}/maintenance/jobs        Jobs for a specific train
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Path as FPath, Query
+from fastapi import APIRouter, Depends, HTTPException, Path as FPath, Query, Response
 from pydantic import BaseModel, Field
 
 from core.wheel_lifecycle.fleet_repository import FleetRepository
 from core.wheel_lifecycle.repository import WheelRepository
+from core.wheel_lifecycle.report_generator import ReportGenerator
+from core.wheel_lifecycle.auth import require_role, ROLE_MAINTENANCE_SUPERVISOR, ROLE_OPERATOR
 from maintenance_priority.scheduler import generate_maintenance_recommendation
 
 router = APIRouter(prefix="/api", tags=["Maintenance Jobs"])
@@ -31,6 +34,19 @@ VALID_JOB_STATUSES = {"PENDING", "SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCE
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
+
+class UrgentEscalateRequest(BaseModel):
+    wheel_asset_id: Optional[str] = None
+    train_id: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class ScheduleSlotRequest(BaseModel):
+    wheel_asset_id: Optional[str] = None
+    train_id: Optional[int] = None
+    start_datetime: str
+    end_datetime: str
+    notes: Optional[str] = None
 
 class MaintenanceJobResponse(BaseModel):
     id: int
@@ -48,6 +64,10 @@ class MaintenanceJobResponse(BaseModel):
     completion_notes: Optional[str]
     created_at: str
     last_updated: str
+    scheduling_status: Optional[str] = None
+    scheduling_notes: Optional[str] = None
+    conflict_notes: List[str] = []
+    requires_operational_clearance: bool = False
 
 
 class ConfirmSlotRequest(BaseModel):
@@ -84,6 +104,26 @@ def _job_or_404(repo: FleetRepository, job_id: int):
     return j
 
 
+def _enrich_job(j: Dict[str, Any]) -> MaintenanceJobResponse:
+    d = dict(j)
+    sched_status = d.get("scheduling_status")
+    if not sched_status:
+        if d.get("confirmed_start"):
+            sched_status = "CONFIRMED"
+        elif d.get("suggested_start"):
+            sched_status = "SCHEDULED"
+        else:
+            sched_status = "ROUTINE"
+    d["scheduling_status"] = sched_status
+    if "requires_operational_clearance" not in d or d["requires_operational_clearance"] is None:
+        d["requires_operational_clearance"] = (d.get("priority") == "CRITICAL")
+    if "conflict_notes" not in d or d["conflict_notes"] is None:
+        d["conflict_notes"] = []
+    if "scheduling_notes" not in d or d["scheduling_notes"] is None:
+        d["scheduling_notes"] = d.get("completion_notes") or ""
+    return MaintenanceJobResponse(**d)
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # RECOMMENDATION ENDPOINT
 # ═════════════════════════════════════════════════════════════════════════════
@@ -102,6 +142,7 @@ def _job_or_404(repo: FleetRepository, job_id: int):
 def recommend_maintenance(
     wheel_asset_id: str = FPath(..., description="Wheel asset ID e.g. WH000001"),
     inspection_event_id: Optional[str] = Query(None, description="Link to a specific inspection event"),
+    current_user: dict = Depends(require_role(ROLE_MAINTENANCE_SUPERVISOR)),
 ):
     fleet_repo = FleetRepository()
     wheel_repo = WheelRepository()
@@ -226,7 +267,7 @@ def list_all_jobs(
 ):
     repo = FleetRepository()
     jobs = repo.list_jobs(train_id=train_id, status=status, priority=priority)
-    return [MaintenanceJobResponse(**j) for j in jobs]
+    return [_enrich_job(j) for j in jobs]
 
 
 @router.get(
@@ -236,7 +277,7 @@ def list_all_jobs(
 )
 def list_pending_jobs():
     repo = FleetRepository()
-    return [MaintenanceJobResponse(**j) for j in repo.list_jobs(status="PENDING")]
+    return [_enrich_job(j) for j in repo.list_jobs(status="PENDING")]
 
 
 @router.get(
@@ -246,7 +287,7 @@ def list_pending_jobs():
 )
 def list_urgent_jobs():
     repo = FleetRepository()
-    return [MaintenanceJobResponse(**j) for j in repo.list_jobs(priority="CRITICAL")]
+    return [_enrich_job(j) for j in repo.list_jobs(priority="CRITICAL")]
 
 
 @router.get(
@@ -262,7 +303,7 @@ def list_train_jobs(
     if not repo.get_train_by_id(train_id):
         raise HTTPException(status_code=404, detail=f"Train {train_id} not found.")
     jobs = repo.list_jobs(train_id=train_id, status=status)
-    return [MaintenanceJobResponse(**j) for j in jobs]
+    return [_enrich_job(j) for j in jobs]
 
 
 @router.get(
@@ -273,7 +314,40 @@ def list_train_jobs(
 def maintenance_history_for_wheel(wheel_asset_id: str = FPath(...)):
     repo = FleetRepository()
     jobs = repo.list_jobs(wheel_asset_id=wheel_asset_id)
-    return [MaintenanceJobResponse(**j) for j in jobs]
+    return [_enrich_job(j) for j in jobs]
+
+
+@router.get(
+    "/maintenance/jobs/export/csv",
+    summary="Export all maintenance jobs as a CSV spreadsheet",
+)
+def export_jobs_csv():
+    generator = ReportGenerator()
+    csv_text = generator.generate_jobs_csv()
+    return Response(
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="maintenance_jobs.csv"'},
+    )
+
+
+@router.get(
+    "/maintenance/jobs/{job_id}/work-order-pdf",
+    summary="Generate and download a Depot Maintenance Work Order PDF",
+)
+def download_job_work_order_pdf(job_id: int = FPath(...)):
+    repo = FleetRepository()
+    _job_or_404(repo, job_id)
+    generator = ReportGenerator()
+    try:
+        pdf_bytes = generator.generate_work_order_pdf(job_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate work order PDF: {e}")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="work_order_job_{job_id}.pdf"'},
+    )
 
 
 @router.get(
@@ -283,7 +357,7 @@ def maintenance_history_for_wheel(wheel_asset_id: str = FPath(...)):
 )
 def get_job(job_id: int = FPath(...)):
     repo = FleetRepository()
-    return MaintenanceJobResponse(**_job_or_404(repo, job_id))
+    return _enrich_job(_job_or_404(repo, job_id))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -302,6 +376,7 @@ def get_job(job_id: int = FPath(...)):
 def confirm_maintenance_slot(
     body: ConfirmSlotRequest,
     job_id: int = FPath(...),
+    current_user: dict = Depends(require_role(ROLE_MAINTENANCE_SUPERVISOR)),
 ):
     repo = FleetRepository()
     job = _job_or_404(repo, job_id)
@@ -346,7 +421,7 @@ def confirm_maintenance_slot(
         job_status="SCHEDULED",
         confirmed_start=body.confirmed_start,
     )
-    return MaintenanceJobResponse(**updated)
+    return _enrich_job(updated)
 
 
 @router.patch(
@@ -357,6 +432,7 @@ def confirm_maintenance_slot(
 def update_job_status(
     body: StatusUpdateRequest,
     job_id: int = FPath(...),
+    current_user: dict = Depends(require_role(ROLE_MAINTENANCE_SUPERVISOR)),
 ):
     if body.job_status not in VALID_JOB_STATUSES:
         raise HTTPException(
@@ -364,10 +440,193 @@ def update_job_status(
             detail=f"job_status must be one of {sorted(VALID_JOB_STATUSES)}.",
         )
     repo = FleetRepository()
-    _job_or_404(repo, job_id)
+    wheel_repo = WheelRepository()
+    job = _job_or_404(repo, job_id)
+    target_status = body.job_status
+    wheel_asset_id = job.get("wheel_asset_id")
+
+    train_id = job.get("train_id")
+    coach_id = job.get("coach_id")
+
+    # If job has no train_id, ensure a train is associated or created for this wheel/job
+    if not train_id and wheel_asset_id:
+        train_num = f"TR-{wheel_asset_id}"
+        train = repo.get_train_by_number(train_num)
+        if not train:
+            status_for_new_train = "Under Maintenance" if target_status == "IN_PROGRESS" else "Active"
+            train = repo.create_train(
+                train_number=train_num,
+                train_name=f"Express {wheel_asset_id}",
+                train_type="Superfast Express",
+                operational_status=status_for_new_train,
+            )
+            train_id = train["id"]
+            coach = repo.add_coach(train_id, f"C1-{wheel_asset_id}", "AC")
+            coach_id = coach["id"]
+            cursor = repo.db.cursor()
+            cursor.execute(
+                "UPDATE wheels SET coach_id=?, train_id=? WHERE asset_id=?",
+                (str(coach_id), str(train_id), wheel_asset_id),
+            )
+            now_dt = datetime.now()
+            repo.add_schedule(
+                train_id=train_id,
+                schedule_type="OPERATING",
+                departure_datetime=(now_dt + timedelta(days=1, hours=8)).isoformat(timespec="seconds"),
+                arrival_datetime=(now_dt + timedelta(days=1, hours=16)).isoformat(timespec="seconds"),
+                notes="Daily express run",
+                status="ACTIVE",
+            )
+            repo.add_schedule(
+                train_id=train_id,
+                schedule_type="MAINTENANCE_WINDOW",
+                departure_datetime=(now_dt + timedelta(days=3, hours=2)).isoformat(timespec="seconds"),
+                arrival_datetime=(now_dt + timedelta(days=3, hours=8)).isoformat(timespec="seconds"),
+                notes="Planned maintenance slot",
+                status="ACTIVE",
+            )
+            repo.db.commit()
+        else:
+            train_id = train["id"]
+            coaches = repo.list_coaches_for_train(train_id)
+            if coaches:
+                coach_id = coaches[0]["id"]
+            status_to_set = "Under Maintenance" if target_status == "IN_PROGRESS" else "Active"
+            repo.update_train(train_id, operational_status=status_to_set)
+
+    # When transitioning to IN_PROGRESS (Start job)
+    if target_status == "IN_PROGRESS":
+        if train_id:
+            repo.update_train(train_id, operational_status="Under Maintenance")
+
+    # When transitioning to COMPLETED (Mark as done)
+    elif target_status == "COMPLETED":
+        if train_id:
+            repo.update_train(train_id, operational_status="Active")
+        if wheel_asset_id:
+            wheel_repo.update_wheel_status(
+                asset_id=wheel_asset_id,
+                status="Healthy",
+                latest_inspection=datetime.now().isoformat(timespec="seconds"),
+            )
+
     updated = repo.update_maintenance_job(
         job_id=job_id,
-        job_status=body.job_status,
-        completion_notes=body.completion_notes,
+        job_status=target_status,
+        completion_notes=body.completion_notes or ("Maintenance completed successfully. Wheel inspected and cleared for service." if target_status == "COMPLETED" else None),
+        train_id=train_id,
+        coach_id=coach_id,
     )
-    return MaintenanceJobResponse(**updated)
+    return _enrich_job(updated)
+
+
+@router.get(
+    "/inspections/{event_or_inspection_id}/work-order-pdf",
+    summary="Generate Work Order / Inspection Report PDF from inspection event",
+)
+def download_inspection_work_order_pdf(event_or_inspection_id: str = FPath(...)):
+    generator = ReportGenerator()
+    try:
+        pdf_bytes = generator.generate_inspection_work_order_pdf(event_or_inspection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {e}")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="work_order_{event_or_inspection_id}.pdf"'},
+    )
+
+
+@router.get(
+    "/fleet/wheels/{wheel_asset_id}/work-order-pdf",
+    summary="Generate Work Order / Health Report PDF for a specific wheel asset",
+)
+def download_wheel_work_order_pdf(wheel_asset_id: str = FPath(...)):
+    generator = ReportGenerator()
+    try:
+        pdf_bytes = generator.generate_wheel_work_order_pdf(wheel_asset_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {e}")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="work_order_wheel_{wheel_asset_id}.pdf"'},
+    )
+
+
+@router.get(
+    "/fleet/wheels/{wheel_asset_id}/export/csv",
+    summary="Export defect inspection history for a wheel as CSV",
+)
+def export_wheel_history_csv(wheel_asset_id: str = FPath(...)):
+    wheel_repo = WheelRepository()
+    if not wheel_repo.get_wheel(wheel_asset_id):
+        raise HTTPException(status_code=404, detail=f"Wheel '{wheel_asset_id}' not found.")
+    generator = ReportGenerator()
+    csv_text = generator.generate_wheel_history_csv(wheel_asset_id)
+    return Response(
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="wheel_{wheel_asset_id}_history.csv"'},
+    )
+
+
+@router.post(
+    "/maintenance/escalate-urgent",
+    response_model=MaintenanceJobResponse,
+    summary="Escalate train or wheel maintenance to urgent priority",
+    description="Marks wheel maintenance as CRITICAL/Urgent priority, placing an operational hold and alerting the maintenance team ASAP.",
+)
+def escalate_urgent(
+    body: UrgentEscalateRequest,
+    current_user: dict = Depends(require_role(ROLE_OPERATOR)),
+):
+    repo = FleetRepository()
+    wheel_id = body.wheel_asset_id
+    if not wheel_id and body.train_id:
+        train_wheels = repo.list_wheels_for_train(body.train_id)
+        critical_wheels = [w for w in train_wheels if w.get("status") == "Critical"]
+        wheel_id = critical_wheels[0]["asset_id"] if critical_wheels else (train_wheels[0]["asset_id"] if train_wheels else None)
+    if not wheel_id:
+        raise HTTPException(
+            status_code=400,
+            detail="A valid wheel_asset_id or train_id with registered wheels is required.",
+        )
+    job = repo.escalate_job_urgent(wheel_asset_id=wheel_id, train_id=body.train_id, notes=body.notes)
+    return _enrich_job(job)
+
+
+@router.post(
+    "/maintenance/schedule-slot",
+    response_model=MaintenanceJobResponse,
+    summary="Schedule maintenance for a wheel into a specific slot",
+    description="Schedules a low/moderate wear wheel into an upcoming turnaround maintenance window.",
+)
+def schedule_slot(
+    body: ScheduleSlotRequest,
+    current_user: dict = Depends(require_role(ROLE_OPERATOR)),
+):
+    repo = FleetRepository()
+    wheel_id = body.wheel_asset_id
+    if not wheel_id and body.train_id:
+        train_wheels = repo.list_wheels_for_train(body.train_id)
+        monitor_wheels = [w for w in train_wheels if w.get("status") == "Monitor"]
+        wheel_id = monitor_wheels[0]["asset_id"] if monitor_wheels else (train_wheels[0]["asset_id"] if train_wheels else None)
+    if not wheel_id:
+        raise HTTPException(
+            status_code=400,
+            detail="A valid wheel_asset_id or train_id with registered wheels is required.",
+        )
+    job = repo.schedule_maintenance_slot(
+        wheel_asset_id=wheel_id,
+        train_id=body.train_id,
+        start_datetime=body.start_datetime,
+        end_datetime=body.end_datetime,
+        notes=body.notes,
+    )
+    return _enrich_job(job)
+

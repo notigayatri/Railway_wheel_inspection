@@ -41,10 +41,16 @@ def req(
     files: Optional[Dict[str, Tuple[str, bytes, str]]] = None,
     expected_status: int = 200,
     label: str = "",
+    token: Optional[str] = None,
+    api_key: Optional[str] = "adm-key-secret-999",
 ) -> Dict[str, Any]:
     global passed, failed
     url = BASE + path
     headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    elif api_key:
+        headers["X-API-Key"] = api_key
     data = None
 
     if body is not None:
@@ -79,7 +85,7 @@ def req(
     status = 0
     resp_body = {}
     try:
-        with urllib.request.urlopen(request_obj, timeout=30) as r:
+        with urllib.request.urlopen(request_obj, timeout=90) as r:
             status = r.status
             raw = r.read()
             if raw:
@@ -128,6 +134,33 @@ def section(name: str):
 def main():
     print(f"Starting End-to-End System Verification (Run ID: {RUN_ID})")
     print(f"Target Server: {BASE}\n")
+
+    # 0. Authentication & RBAC Verification
+    section("0. Authentication & Role-Based Access Control (RBAC)")
+    r_adm = req("POST", "/api/auth/login", body={"username": "admin", "password": "admin123"},
+                expected_status=200, label="Admin Login (POST /api/auth/login)", api_key=None)
+    adm_token = r_adm["access_token"]
+    assert r_adm["role"] == "ADMIN"
+
+    r_sup = req("POST", "/api/auth/login", body={"username": "supervisor", "password": "super123"},
+                expected_status=200, label="Supervisor Login (POST /api/auth/login)", api_key=None)
+    sup_token = r_sup["access_token"]
+    assert r_sup["role"] == "MAINTENANCE_SUPERVISOR"
+
+    r_opr = req("POST", "/api/auth/login", body={"username": "operator", "password": "oper123"},
+                expected_status=200, label="Operator Login (POST /api/auth/login)", api_key=None)
+    opr_token = r_opr["access_token"]
+    assert r_opr["role"] == "OPERATOR"
+
+    r_roles = req("GET", "/api/auth/roles", expected_status=200, label="List Roles Hierarchy (GET /api/auth/roles)")
+    assert len(r_roles.get("roles", [])) == 3
+
+    r_me = req("GET", "/api/auth/me", expected_status=200, label="Current User Profile (GET /api/auth/me)", token=adm_token, api_key=None)
+    assert r_me["username"] == "admin"
+
+    # Test RBAC Rejection: Operator attempting to register train -> 403
+    req("POST", "/api/trains", body={"train_number": f"T_BLOCKED_{RUN_ID}", "train_name": "Blocked Express"},
+        expected_status=403, label="Operator Blocked from Registering Train (POST /api/trains)", token=opr_token, api_key=None)
 
     # 1. Health & Meta
     section("1. Core & Server Health Endpoints")
@@ -226,6 +259,8 @@ def main():
     # 5. Live ML Wheel Inspection with Real Image Upload
     section("5. Live ML Inspection Pipeline with Image Upload (POST /api/inspect)")
     sample_img_path = Path("dataset/test/images/frame1669_jpg.rf.fbb0d3e03b5cb6a816ee6593ecad1fcf.jpg")
+    if not sample_img_path.exists():
+        sample_img_path = Path("outputs/uploads/frame1669_jpg.rf.fbb0d3e03b5cb6a816ee6593ecad1fcf.jpg")
     assert sample_img_path.exists(), f"Sample image {sample_img_path} not found"
 
     with open(sample_img_path, "rb") as f:

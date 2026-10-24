@@ -1,0 +1,303 @@
+{
+  "timestamp": "2026-10-24 07:19:58",
+  "total_images": 9,
+  "inference_speed_ms": {
+    "preprocess": 2.3889222219521695,
+    "inference": 358.3992333333299,
+    "loss": 0.00038888902054168284,
+    "postprocess": 2.5592333331587724
+  },
+  "overall": {
+    "box_precision": 0.8816800860541182,
+    "box_recall": 0.8571428571428571,
+    "box_map50": 0.8122222222222223,
+    "box_map50_95": 0.6171654761904761,
+    "box_f1": 0.8692383442524864,
+    "seg_map50": 0.7063888888888888,
+    "seg_map50_95": 0.5372211640211638,
+    "seg_precision": 0.7580789255851593,
+    "seg_recall": 0.7597465952218404
+  },
+  "per_class": {
+    "Cracks-Scratches": {
+      "class_id": 0,
+      "class_name": "Cracks-Scratches",
+      "precision": 0.7562,
+      "recall": 0.5714,
+      "f1_score": 0.6509,
+      "map50": 0.46,
+      "map50_95": 0.2231,
+      "seg_map50": 0.1425,
+      "seg_map50_95": 0.1
+    },
+    "Discoloration": {
+      "class_id": 1,
+      "class_name": "Discoloration",
+      "precision": 0.8889,
+      "recall": 1.0,
+      "f1_score": 0.9412,
+      "map50": 0.9817,
+      "map50_95": 0.6456,
+      "seg_map50": 0.9817,
+      "seg_map50_95": 0.5991
+    },
+    "Shelling": {
+      "class_id": 2,
+      "class_name": "Shelling",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "map50": 0.995,
+      "map50_95": 0.9828,
+      "seg_map50": 0.995,
+      "seg_map50_95": 0.9126
+    }
+  },
+  "image_audits": [
+    {
+      "image": "frame1669_jpg.rf.fbb0d3e03b5cb6a816ee6593ecad1fcf.jpg",
+      "ground_truth_counts": {
+        "Wheel": 1,
+        "Cracks-Scratches": 1,
+        "Shelling": 1
+      },
+      "predicted_counts": {
+        "Wheel": 1,
+        "Cracks-Scratches": 1,
+        "Shelling": 2
+      },
+      "predictions": [
+        {
+          "class": "Wheel",
+          "confidence": 0.923
+        },
+        {
+          "class": "Cracks-Scratches",
+          "confidence": 0.811
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.802
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.453
+        }
+      ],
+      "inference_time_ms": 426.2
+    },
+    {
+      "image": "frame2304_jpg.rf.0188ac25e86fafbbdc3ca9a47b63a8e5.jpg",
+      "ground_truth_counts": {
+        "Wheel": 1,
+        "Shelling": 1,
+        "Cracks-Scratches": 1
+      },
+      "predicted_counts": {
+        "Wheel": 1,
+        "Shelling": 1,
+        "Cracks-Scratches": 1
+      },
+      "predictions": [
+        {
+          "class": "Wheel",
+          "confidence": 0.947
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.842
+        },
+        {
+          "class": "Cracks-Scratches",
+          "confidence": 0.707
+        }
+      ],
+      "inference_time_ms": 310.1
+    },
+    {
+      "image": "frame5983_jpg.rf.98d31089c12ce2dd44b48584b54d6fcb.jpg",
+      "ground_truth_counts": {
+        "Wheel": 1,
+        "Shelling": 1,
+        "Cracks-Scratches": 1
+      },
+      "predicted_counts": {
+        "Wheel": 1,
+        "Shelling": 1,
+        "Cracks-Scratches": 1
+      },
+      "predictions": [
+        {
+          "class": "Wheel",
+          "confidence": 0.948
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.867
+        },
+        {
+          "class": "Cracks-Scratches",
+          "confidence": 0.558
+        }
+      ],
+      "inference_time_ms": 332.7
+    },
+    {
+      "image": "frame5999_jpg.rf.937c5781e2b5d9b40329784617c0f553.jpg",
+      "ground_truth_counts": {
+        "Wheel": 1,
+        "Shelling": 1,
+        "Cracks-Scratches": 1
+      },
+      "predicted_counts": {
+        "Wheel": 1,
+        "Shelling": 1,
+        "Cracks-Scratches": 1
+      },
+      "predictions": [
+        {
+          "class": "Wheel",
+          "confidence": 0.934
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.806
+        },
+        {
+          "class": "Cracks-Scratches",
+          "confidence": 0.552
+        }
+      ],
+      "inference_time_ms": 328.0
+    },
+    {
+      "image": "frame6001_jpg.rf.ab5d0c19875eb9f6b4e6a84d4805a1bc.jpg",
+      "ground_truth_counts": {
+        "Wheel": 1,
+        "Shelling": 1,
+        "Cracks-Scratches": 1
+      },
+      "predicted_counts": {
+        "Wheel": 1,
+        "Shelling": 1,
+        "Cracks-Scratches": 1
+      },
+      "predictions": [
+        {
+          "class": "Wheel",
+          "confidence": 0.937
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.81
+        },
+        {
+          "class": "Cracks-Scratches",
+          "confidence": 0.54
+        }
+      ],
+      "inference_time_ms": 357.5
+    },
+    {
+      "image": "frame6544_jpg.rf.b8c970ea3f9f76ca0fc76f098110e578.jpg",
+      "ground_truth_counts": {
+        "Wheel": 1,
+        "Shelling": 1,
+        "Cracks-Scratches": 1
+      },
+      "predicted_counts": {
+        "Wheel": 1,
+        "Shelling": 3
+      },
+      "predictions": [
+        {
+          "class": "Wheel",
+          "confidence": 0.949
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.756
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.633
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.448
+        }
+      ],
+      "inference_time_ms": 326.1
+    },
+    {
+      "image": "frame7048_jpg.rf.f480b5a118a973a2abb6e678415a2b71.jpg",
+      "ground_truth_counts": {
+        "Wheel": 1,
+        "Cracks-Scratches": 1
+      },
+      "predicted_counts": {
+        "Wheel": 1,
+        "Cracks-Scratches": 1
+      },
+      "predictions": [
+        {
+          "class": "Wheel",
+          "confidence": 0.938
+        },
+        {
+          "class": "Cracks-Scratches",
+          "confidence": 0.378
+        }
+      ],
+      "inference_time_ms": 334.3
+    },
+    {
+      "image": "frame7624_jpg.rf.bb1b5b03ff9527bf945c46186afaba66.jpg",
+      "ground_truth_counts": {
+        "Wheel": 1,
+        "Shelling": 1
+      },
+      "predicted_counts": {
+        "Wheel": 1,
+        "Shelling": 1
+      },
+      "predictions": [
+        {
+          "class": "Wheel",
+          "confidence": 0.94
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.511
+        }
+      ],
+      "inference_time_ms": 326.6
+    },
+    {
+      "image": "frame9088_jpg.rf.612891094011063c12305fc69698a16b.jpg",
+      "ground_truth_counts": {
+        "Wheel": 1,
+        "Shelling": 1
+      },
+      "predicted_counts": {
+        "Wheel": 1,
+        "Shelling": 2
+      },
+      "predictions": [
+        {
+          "class": "Wheel",
+          "confidence": 0.935
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.79
+        },
+        {
+          "class": "Shelling",
+          "confidence": 0.457
+        }
+      ],
+      "inference_time_ms": 298.4
+    }
+  ]
+}

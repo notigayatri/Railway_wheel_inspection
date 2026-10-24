@@ -73,7 +73,7 @@ class WheelRepository:
         SET
             status=?,
             latest_inspection=?,
-            inspection_count=inspection_count+1,
+            inspection_count=COALESCE(inspection_count, 0) + 1,
             last_updated=datetime('now')
         WHERE asset_id=?
         """, (

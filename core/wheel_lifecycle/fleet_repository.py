@@ -12,7 +12,7 @@ connection through DatabaseManager.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from core.wheel_lifecycle.database import DatabaseManager
@@ -143,6 +143,30 @@ class FleetRepository:
         )
         return [dict(r) for r in cursor.fetchall()]
 
+    def delete_coach(self, coach_id: int) -> bool:
+        """
+        Delete a coach and its associated wheels, inspection events,
+        and maintenance jobs, preserving relational integrity.
+        """
+        cursor = self.db.cursor()
+        # Find all wheels in this coach
+        cursor.execute("SELECT asset_id FROM wheels WHERE coach_id=?", (str(coach_id),))
+        wheel_ids = [row[0] for row in cursor.fetchall()]
+
+        for wid in wheel_ids:
+            cursor.execute("DELETE FROM maintenance_jobs WHERE wheel_asset_id=?", (wid,))
+            cursor.execute("DELETE FROM inspection_events WHERE asset_id=?", (wid,))
+            cursor.execute("DELETE FROM inspections WHERE asset_id=?", (wid,))
+            cursor.execute("DELETE FROM wheels WHERE asset_id=?", (wid,))
+
+        # Clean up any jobs or events explicitly tagged with coach_id
+        cursor.execute("DELETE FROM maintenance_jobs WHERE coach_id=?", (coach_id,))
+        cursor.execute("DELETE FROM inspection_events WHERE coach_id=?", (coach_id,))
+
+        cursor.execute("DELETE FROM coaches WHERE id=?", (coach_id,))
+        self.db.commit()
+        return cursor.rowcount > 0
+
     # ==================================================================
     # WHEELS (extended queries on the existing wheels table)
     # ==================================================================
@@ -152,6 +176,19 @@ class FleetRepository:
         cursor.execute(
             "SELECT * FROM wheels WHERE coach_id=? ORDER BY asset_id",
             (str(coach_id),),
+        )
+        return [dict(r) for r in cursor.fetchall()]
+
+    def list_wheels_for_train(self, train_id: int) -> List[Dict[str, Any]]:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            SELECT w.* FROM wheels w
+            JOIN coaches c ON (w.coach_id = CAST(c.id AS TEXT) OR w.coach_id = c.id)
+            WHERE c.train_id = ?
+            ORDER BY w.asset_id
+            """,
+            (train_id,),
         )
         return [dict(r) for r in cursor.fetchall()]
 
@@ -367,6 +404,20 @@ class FleetRepository:
         )
         return cursor.fetchone() is not None
 
+    def get_open_job_for_wheel(self, wheel_asset_id: str) -> Optional[Dict[str, Any]]:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM maintenance_jobs
+            WHERE wheel_asset_id=?
+              AND job_status NOT IN ('COMPLETED', 'CANCELLED')
+            ORDER BY id DESC LIMIT 1
+            """,
+            (wheel_asset_id,),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
     def create_maintenance_job(
         self,
         wheel_asset_id: str,
@@ -410,15 +461,23 @@ class FleetRepository:
         self,
         job_id: int,
         job_status: Optional[str] = None,
+        priority: Optional[str] = None,
+        recommended_action: Optional[str] = None,
         confirmed_start: Optional[str] = None,
         completion_notes: Optional[str] = None,
         suggested_start: Optional[str] = None,
         suggested_end: Optional[str] = None,
+        train_id: Optional[int] = None,
+        coach_id: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         now = _now_iso()
         fields, values = [], []
         if job_status is not None:
             fields.append("job_status=?"); values.append(job_status)
+        if priority is not None:
+            fields.append("priority=?"); values.append(priority)
+        if recommended_action is not None:
+            fields.append("recommended_action=?"); values.append(recommended_action)
         if confirmed_start is not None:
             fields.append("confirmed_start=?"); values.append(confirmed_start)
         if completion_notes is not None:
@@ -427,6 +486,10 @@ class FleetRepository:
             fields.append("suggested_start=?"); values.append(suggested_start)
         if suggested_end is not None:
             fields.append("suggested_end=?"); values.append(suggested_end)
+        if train_id is not None:
+            fields.append("train_id=?"); values.append(train_id)
+        if coach_id is not None:
+            fields.append("coach_id=?"); values.append(coach_id)
         if not fields:
             return self.get_maintenance_job(job_id)
         fields.append("last_updated=?"); values.append(now)
@@ -437,6 +500,102 @@ class FleetRepository:
         )
         self.db.commit()
         return self.get_maintenance_job(job_id)
+
+    def escalate_job_urgent(
+        self,
+        wheel_asset_id: str,
+        train_id: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Escalates a wheel maintenance issue to CRITICAL/Urgent priority.
+        If an open job exists, updates it to CRITICAL with urgent notice.
+        If no job exists, creates a new CRITICAL priority job immediately.
+        Also marks wheel status as Critical for safety.
+        """
+        existing = self.get_open_job_for_wheel(wheel_asset_id)
+        now = _now_iso()
+        start = (datetime.now() + timedelta(hours=1)).isoformat(timespec="seconds")
+        end = (datetime.now() + timedelta(hours=5)).isoformat(timespec="seconds")
+        urgent_text = f"URGENT: Maintenance team alerted to put on top priority and solve ASAP. Immediate turnaround required. {notes or ''}".strip()
+
+        # Update wheel status to Critical if it's not already
+        wheel = self.get_wheel_by_asset_id(wheel_asset_id)
+        coach_id = wheel.get("coach_id") if wheel else None
+        if wheel and wheel.get("status") != "Critical":
+            cursor = self.db.cursor()
+            cursor.execute(
+                "UPDATE wheels SET status='Critical', last_updated=? WHERE asset_id=?",
+                (now, wheel_asset_id),
+            )
+            self.db.commit()
+
+        if existing:
+            return self.update_maintenance_job(
+                job_id=existing["id"],
+                job_status="PENDING",
+                priority="CRITICAL",
+                recommended_action="Immediate Turnaround & Priority Intervention",
+                suggested_start=start,
+                suggested_end=end,
+                completion_notes=urgent_text,
+            )
+        else:
+            return self.create_maintenance_job(
+                wheel_asset_id=wheel_asset_id,
+                risk_score=95.0,
+                priority="CRITICAL",
+                recommended_action="Immediate Turnaround & Priority Intervention",
+                train_id=train_id or (wheel.get("train_id") if wheel else None),
+                coach_id=coach_id,
+                suggested_start=start,
+                suggested_end=end,
+            )
+
+    def schedule_maintenance_slot(
+        self,
+        wheel_asset_id: str,
+        train_id: Optional[int] = None,
+        start_datetime: Optional[str] = None,
+        end_datetime: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Schedules a routine or moderate maintenance job into a specific window.
+        """
+        existing = self.get_open_job_for_wheel(wheel_asset_id)
+        sched_note = f"Scheduled for upcoming maintenance slot: {start_datetime} to {end_datetime}. {notes or ''}".strip()
+        wheel = self.get_wheel_by_asset_id(wheel_asset_id)
+        coach_id = wheel.get("coach_id") if wheel else None
+        priority = "MODERATE" if (wheel and wheel.get("status") == "Monitor") else "LOW"
+
+        if existing:
+            return self.update_maintenance_job(
+                job_id=existing["id"],
+                job_status="SCHEDULED",
+                priority=priority,
+                confirmed_start=start_datetime,
+                suggested_start=start_datetime,
+                suggested_end=end_datetime,
+                completion_notes=sched_note,
+            )
+        else:
+            job = self.create_maintenance_job(
+                wheel_asset_id=wheel_asset_id,
+                risk_score=50.0 if priority == "MODERATE" else 25.0,
+                priority=priority,
+                recommended_action="Turnaround Servicing during Depot Window",
+                train_id=train_id or (wheel.get("train_id") if wheel else None),
+                coach_id=coach_id,
+                suggested_start=start_datetime,
+                suggested_end=end_datetime,
+            )
+            return self.update_maintenance_job(
+                job_id=job["id"],
+                job_status="SCHEDULED",
+                confirmed_start=start_datetime,
+                completion_notes=sched_note,
+            )
 
     def list_jobs(
         self,

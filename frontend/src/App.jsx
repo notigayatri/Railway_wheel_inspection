@@ -1,40 +1,72 @@
-import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import Home from "./pages/Home.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Trains from "./pages/Trains.jsx";
 import Inspect from "./pages/Inspect.jsx";
 import Planner from "./pages/Planner.jsx";
 import Wheels from "./pages/Wheels.jsx";
-import { MOCK } from "./api.js";
+import RoleDropdown from "./components/RoleDropdown.jsx";
 
 export default function App() {
   const loc = useLocation();
+  const isHomePage = loc.pathname === "/home";
+
+  const handleDownloadChecklist = () => {
+    const text = `CHAKRAKSH • RAILWAY WHEEL HEALTH & SAFETY CHECKLIST
+1. Wayside Screening: Verify pass-by camera alignment and acoustic wheel-impact threshold.
+2. Defect Screening: Run rapid single-pass detection on all incoming train coaches.
+3. Diagnostic Escalation: On any Moderate or Severe defect, trigger 5-pass TTA & Layer-CAM.
+4. Schedule Deconfliction: Check maintenance turnaround window against operating runs.
+5. Work Order Release: Issue stamped depot maintenance PDF before releasing train to service.
+`;
+    const blob = new Blob([text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "chakraksh-depot-checklist.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <div className="shell">
-      <aside className="side">
-        <div className="brand">
-          <svg viewBox="0 0 40 40" width="42" height="42" aria-hidden="true">
-            <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#3C948C" /><stop offset="1" stopColor="#1F5F63" /></linearGradient></defs>
-            <rect width="40" height="40" rx="12" fill="url(#lg)" />
-            <circle cx="20" cy="20" r="11" fill="none" stroke="#fff" strokeWidth="3" />
-            <path className="pulse" d="M5 21h9l3-8 4 15 3-9h11" fill="none" stroke="#F3E3B0" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          <span>Wheel Health<small>Fleet maintenance system</small></span>
-        </div>
-        <nav>
-          <NavLink to="/" end>Dashboard</NavLink>
-          <NavLink to="/trains">Trains</NavLink>
-          <NavLink to="/inspect">New inspection</NavLink>
-          <NavLink to="/planner">Maintenance planner</NavLink>
-          <NavLink to="/wheels">Wheel history</NavLink>
+    <div className={`shell ${isHomePage ? "shell-home" : ""}`}>
+      <header className="global-nav">
+        <Link to="/home" className="brand" aria-label="Chakraksh Home" title="Chakraksh Home">
+          chakraksh.
+        </Link>
+
+        <nav className="nav-links" aria-label="Primary navigation">
+          <NavLink
+            to="/dashboard"
+            className={({ isActive }) => (isActive || loc.pathname === "/" ? "active" : "")}
+          >
+            DASHBOARD
+          </NavLink>
+          <NavLink to="/trains">TRAINS</NavLink>
+          <NavLink to="/inspect">INSPECTIONS</NavLink>
+          <NavLink to="/planner">MAINTENANCE</NavLink>
+          <NavLink to="/wheels">WHEELS</NavLink>
         </nav>
-        <div className="mock">
-          {MOCK && <p>Demo mode. Connect the backend by setting VITE_USE_MOCK=false.</p>}
-          <p>Simulated fleet data. Maintenance dates are rule-based recommendations, not certified safety decisions.</p>
+
+        <div className="nav-actions">
+          <RoleDropdown />
+
+          <button
+            className="nav-btn-outline"
+            onClick={handleDownloadChecklist}
+            title="Download Depot Safety Checklist"
+          >
+            Download
+          </button>
         </div>
-      </aside>
-      <main key={loc.pathname} className="page">
+      </header>
+
+      <main key={loc.pathname} className={`page ${isHomePage ? "page-home" : ""}`}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/home" element={<Home />} />
+          <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/trains" element={<Trains />} />
           <Route path="/inspect" element={<Inspect />} />
           <Route path="/planner" element={<Planner />} />
@@ -44,3 +76,4 @@ export default function App() {
     </div>
   );
 }
+

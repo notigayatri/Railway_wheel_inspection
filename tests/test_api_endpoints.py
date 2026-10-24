@@ -46,6 +46,8 @@ def request(
     content_type: str = "application/json",
     expected_status: int = 200,
     label: str = "",
+    token: Optional[str] = None,
+    api_key: Optional[str] = "adm-key-secret-999",
 ) -> Optional[Dict[str, Any]]:
     global passed, failed
     url = BASE + path
@@ -63,11 +65,18 @@ def request(
         req = urllib.request.Request(url, data=data, method=method)
         if data:
             req.add_header("Content-Type", ct)
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        elif api_key:
+            req.add_header("X-API-Key", api_key)
 
         with urllib.request.urlopen(req, timeout=15) as resp:
             status = resp.status
             raw = resp.read()
-            result = json.loads(raw) if raw else {}
+            try:
+                result = json.loads(raw) if raw else {}
+            except Exception:
+                result = {"raw": raw.decode(errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw)}
 
         if status == expected_status:
             tag = PASS
@@ -116,6 +125,42 @@ def section(title: str):
     print(f"  {title}")
     print(f"{'='*65}")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0. AUTHENTICATION & RBAC ROLE CONTROL
+# ─────────────────────────────────────────────────────────────────────────────
+section("0. Authentication & Role-Based Access Control (RBAC)")
+
+r_adm = request("POST", "/api/auth/login", body={"username": "admin", "password": "admin123"},
+                expected_status=200, label="Admin Login -> JWT", api_key=None)
+assert r_adm["role"] == "ADMIN"
+adm_token = r_adm["access_token"]
+
+r_sup = request("POST", "/api/auth/login", body={"username": "supervisor", "password": "super123"},
+                expected_status=200, label="Supervisor Login -> JWT", api_key=None)
+assert r_sup["role"] == "MAINTENANCE_SUPERVISOR"
+sup_token = r_sup["access_token"]
+
+r_opr = request("POST", "/api/auth/login", body={"username": "operator", "password": "oper123"},
+                expected_status=200, label="Operator Login -> JWT", api_key=None)
+assert r_opr["role"] == "OPERATOR"
+opr_token = r_opr["access_token"]
+
+# Bad login -> 401
+request("POST", "/api/auth/login", body={"username": "admin", "password": "badpassword"},
+        expected_status=401, label="Bad Password Rejected (401)", api_key=None)
+
+# Roles metadata
+r_roles = request("GET", "/api/auth/roles", expected_status=200, label="Role Hierarchy Metadata")
+assert len(r_roles.get("roles", [])) == 3
+
+# Auth me with JWT Bearer
+r_me = request("GET", "/api/auth/me", expected_status=200, label="Current User Profile (/api/auth/me)", token=adm_token, api_key=None)
+assert r_me["username"] == "admin"
+
+# Operator attempting admin endpoint -> 403 Forbidden
+request("POST", "/api/trains", body={"train_number": "T_BLOCKED_TEST", "train_name": "Blocked"},
+        expected_status=403, label="Operator Blocked from Registering Train (403)", token=opr_token, api_key=None)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. HEALTH CHECKS
@@ -579,6 +624,48 @@ if "id" in r_new:
 if COACH1_ID and TRAIN_ID:
     r = request("GET", f"/api/trains/999999/coaches/{COACH1_ID}", expected_status=404,
                 label="Coach of a different train -> 404")
+
+# =================================================================
+# 11. Work Order PDF & CSV Export Endpoints
+# =================================================================
+section("11. Work Order PDF & CSV Export Reports")
+r = request("GET", "/api/maintenance/jobs/export/csv", expected_status=200, label="Export All Jobs CSV")
+assert r is not None
+
+if wheel_ids:
+    w_id = wheel_ids[0]
+    r = request("GET", f"/api/fleet/wheels/{w_id}/export/csv", expected_status=200, label="Export Wheel Defect History CSV")
+    assert r is not None
+
+# =================================================================
+# 12. AUTOMATED DATABASE BACKUPS & ARCHIVES
+# =================================================================
+section("12. Automated Database Backups & Archive Management")
+
+# Backup status overview
+r = request("GET", "/api/admin/backups/status", expected_status=200, label="Get Backup Storage Status")
+assert "database_human_size" in r
+assert "total_snapshots" in r
+
+# List existing backups
+r = request("GET", "/api/admin/backups", expected_status=200, label="List Backup Snapshots")
+assert isinstance(r, list)
+
+# Trigger new online backup (Supervisor or Admin)
+r_backup = request("POST", "/api/admin/backups?reason=automated_api_test", expected_status=201, label="Trigger Online Database Snapshot")
+assert r_backup.get("status") == "SUCCESS"
+new_snap_fn = r_backup.get("backup", {}).get("filename")
+assert new_snap_fn is not None
+
+# Download snapshot
+if new_snap_fn:
+    r_dl = request("GET", f"/api/admin/backups/{new_snap_fn}/download", expected_status=200, label="Download SQLite Database Snapshot")
+    assert r_dl is not None
+
+# Operator role blocked from creating backup -> 403
+r_block = request("POST", "/api/admin/backups", token=opr_token, api_key=None, expected_status=403, label="Operator Forbidden from Triggering Backup")
+assert r_block is not None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FINAL SUMMARY

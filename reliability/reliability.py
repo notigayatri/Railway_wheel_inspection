@@ -3,11 +3,13 @@ import numpy as np
 from ultralytics import YOLO
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 from reliability.augmentations import generate_augmentations
 
 # Load trained YOLO model
-MODEL_PATH = Path("models/best.pt")
-model = YOLO(MODEL_PATH)
+MODEL_PATH = PROJECT_ROOT / "models" / "best.pt"
+model = YOLO(str(MODEL_PATH))
 
 
 DEFECT_CLASSES = {

@@ -14,10 +14,11 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Path as FPath
+from fastapi import APIRouter, Depends, HTTPException, Path as FPath
 from pydantic import BaseModel, Field
 
 from core.wheel_lifecycle.fleet_repository import FleetRepository
+from core.wheel_lifecycle.auth import require_role, ROLE_ADMIN
 
 router = APIRouter(prefix="/api", tags=["Operating Schedules"])
 
@@ -98,6 +99,7 @@ def _sched_or_404(repo: FleetRepository, schedule_id: int):
 def add_schedule(
     body: ScheduleCreate,
     train_id: int = FPath(..., description="Internal train ID"),
+    current_user: dict = Depends(require_role(ROLE_ADMIN)),
 ):
     if body.schedule_type not in VALID_SCHEDULE_TYPES:
         raise HTTPException(
@@ -154,6 +156,7 @@ def get_schedule(schedule_id: int = FPath(...)):
 def update_schedule(
     body: ScheduleUpdate,
     schedule_id: int = FPath(...),
+    current_user: dict = Depends(require_role(ROLE_ADMIN)),
 ):
     if body.status and body.status not in VALID_STATUSES:
         raise HTTPException(

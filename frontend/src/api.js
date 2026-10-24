@@ -185,11 +185,92 @@ function mockRecommend(wheelId) {
 }
 
 /* =====================================================================
+   AUTH & ROLE-BASED ACCESS CONTROL (RBAC)
+   ===================================================================== */
+export const ROLES = {
+  ADMIN: "ADMIN",
+  MAINTENANCE_SUPERVISOR: "MAINTENANCE_SUPERVISOR",
+  OPERATOR: "OPERATOR",
+};
+
+export const PRESET_USERS = {
+  ADMIN: { username: "admin", password: "admin123", role: "ADMIN", full_name: "Chief Rolling Stock Engineer (Admin)" },
+  MAINTENANCE_SUPERVISOR: { username: "supervisor", password: "super123", role: "MAINTENANCE_SUPERVISOR", full_name: "Depot Maintenance Supervisor" },
+  OPERATOR: { username: "operator", password: "oper123", role: "OPERATOR", full_name: "Wayside Inspection Operator" },
+};
+
+export function getAuthToken() {
+  return localStorage.getItem("rwh_auth_token") || "";
+}
+
+export function getCurrentUser() {
+  const raw = localStorage.getItem("rwh_auth_user");
+  if (!raw) return PRESET_USERS.ADMIN;
+  try { return JSON.parse(raw); } catch { return PRESET_USERS.ADMIN; }
+}
+
+export function setAuthSession(user, token) {
+  if (user) localStorage.setItem("rwh_auth_user", JSON.stringify(user));
+  if (token) localStorage.setItem("rwh_auth_token", token);
+  window.dispatchEvent(new CustomEvent("auth-changed", { detail: { user, token } }));
+}
+
+export function clearAuthSession() {
+  localStorage.removeItem("rwh_auth_token");
+  localStorage.removeItem("rwh_auth_user");
+  window.dispatchEvent(new CustomEvent("auth-changed", { detail: null }));
+}
+
+export async function login(username, password) {
+  if (MOCK) {
+    const role = username.includes("admin") ? "ADMIN" : username.includes("super") ? "MAINTENANCE_SUPERVISOR" : "OPERATOR";
+    const user = { username, role, full_name: username };
+    setAuthSession(user, "mock-jwt-token");
+    return user;
+  }
+  const r = await fetch(BASE + "/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!r.ok) {
+    let detail = "Authentication failed.";
+    try { const j = await r.json(); detail = j.detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  const data = await r.json();
+  const user = { id: data.user_id, username: data.username, role: data.role, full_name: data.full_name };
+  setAuthSession(user, data.access_token);
+  return data;
+}
+
+export async function switchPresetRole(roleKey) {
+  const preset = PRESET_USERS[roleKey];
+  if (!preset) return;
+  try {
+    return await login(preset.username, preset.password);
+  } catch (err) {
+    console.warn("Failed to login preset role:", err);
+    setAuthSession(preset, "fallback-token");
+  }
+}
+
+// Auto-seed session if not present
+if (typeof window !== "undefined" && !getAuthToken()) {
+  switchPresetRole("ADMIN");
+}
+
+/* =====================================================================
    REAL BACKEND
    ===================================================================== */
-async function req(path, init) {
+async function req(path, init = {}) {
+  const token = getAuthToken();
+  const headers = { ...init.headers };
+  if (token && !headers["Authorization"]) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
   let r;
-  try { r = await fetch(BASE + path, init); } catch { throw new Error(`Cannot reach the backend at ${BASE}. Is it running?`); }
+  try { r = await fetch(BASE + path, { ...init, headers }); } catch { throw new Error(`Cannot reach the backend at ${BASE}. Is it running?`); }
   if (!r.ok) {
     let detail = "";
     try { const j = await r.json(); detail = typeof j.detail === "string" ? j.detail : j.detail ? JSON.stringify(j.detail) : ""; } catch { /* no body */ }
@@ -228,6 +309,13 @@ export async function createCoach(trainId, body) {
   db.coaches.push(c);
   return clone(c);
 }
+export async function deleteCoach(trainId, coachId) {
+  if (!MOCK) return req(`/api/trains/${trainId}/coaches/${coachId}`, { method: "DELETE" });
+  await sleep(200);
+  db.coaches = db.coaches.filter((c) => c.id !== Number(coachId));
+  db.wheels = db.wheels.filter((w) => w.coach_id !== Number(coachId) && w.coach_id !== String(coachId));
+  return { success: true };
+}
 export async function createWheel(coachId, body) {
   if (!MOCK) return req(`/api/coaches/${coachId}/wheels`, send("POST", body));
   await sleep(200);
@@ -236,7 +324,7 @@ export async function createWheel(coachId, body) {
 export const getWheels = async () => (MOCK ? lag(mockWheels, 250) : asList(await req("/api/wheels")));
 export async function getTrainTree(trainId) {
   const [coaches, wheels] = await Promise.all([getCoaches(trainId), getWheels()]);
-  return coaches.map((c) => ({ ...c, wheels: wheels.filter((w) => w.coach_id === c.id) }));
+  return coaches.map((c) => ({ ...c, wheels: wheels.filter((w) => String(w.coach_id) === String(c.id)) }));
 }
 
 /* ---------- schedules ---------- */
@@ -264,13 +352,18 @@ export async function getServiceHistory(id) {
 }
 
 /* ---------- inspection ---------- */
-export async function inspect(file, wheelId, coachId) {
-  if (MOCK) { await sleep(3000); return mockInspect(file, wheelId, coachId); }
+export async function inspect(file, wheelId, coachId, runTta = false) {
+  if (MOCK) { await sleep(runTta ? 2500 : 700); return mockInspect(file, wheelId, coachId); }
   const fd = new FormData();
   fd.append("image", file);
   if (wheelId) fd.append("wheel_id", wheelId);
   if (coachId) fd.append("coach_id", coachId);
-  const r = await fetch(BASE + "/api/inspect", { method: "POST", body: fd }).catch(() => null);
+  fd.append("run_tta", runTta ? "true" : "false");
+  const headers = {};
+  const token = getAuthToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const url = `${BASE}/api/inspect?run_tta=${runTta ? "true" : "false"}`;
+  const r = await fetch(url, { method: "POST", headers, body: fd }).catch(() => null);
   if (!r) throw new Error(`Cannot reach the backend at ${BASE}. Is it running?`);
   if (!r.ok) {
     let detail = "";
@@ -288,7 +381,7 @@ export async function recommend(wheelId) {
   return normJob(mockRecommend(wheelId));
 }
 export async function confirmJob(id) {
-  if (!MOCK) return req(`/api/maintenance/jobs/${id}/confirm`, send("POST", {}));
+  if (!MOCK) return req(`/api/maintenance/jobs/${id}/confirm`, send("POST", { confirmed_start: new Date().toISOString() }));
   await sleep(300);
   const j = db.jobs.find((x) => x.id === id);
   const clash = db.jobs.some((o) => o.id !== id && o.wheel_asset_id === j.wheel_asset_id && ["SCHEDULED", "IN_PROGRESS"].includes(o.job_status) && j.suggested_start && overlaps(o.suggested_start, o.suggested_end, j.suggested_start, j.suggested_end));
@@ -307,3 +400,68 @@ export async function setJobStatus(id, status) {
   }
   return clone(j);
 }
+export async function escalateUrgent(body) {
+  if (!MOCK) return normJob(await req("/api/maintenance/escalate-urgent", send("POST", body)));
+  await sleep(300);
+  const existing = db.jobs.find((j) => j.wheel_asset_id === body.wheel_asset_id && OPEN.includes(j.job_status));
+  if (existing) {
+    existing.priority = "CRITICAL";
+    existing.requires_operational_clearance = true;
+    existing.scheduling_notes = "URGENT PRIORITY: Immediate depot turnaround required ASAP. " + (body.notes || "");
+    return clone(existing);
+  }
+  const job = {
+    id: nextId(db.jobs),
+    wheel_asset_id: body.wheel_asset_id,
+    train_id: body.train_id,
+    priority: "CRITICAL",
+    risk_score: 95.0,
+    job_status: "PENDING",
+    recommended_action: "Immediate Turnaround & Priority Intervention",
+    requires_operational_clearance: true,
+    scheduling_notes: "URGENT PRIORITY: Immediate depot turnaround required ASAP. " + (body.notes || ""),
+    conflict_notes: [],
+  };
+  db.jobs.push(job);
+  return clone(job);
+}
+export async function scheduleMaintenanceSlot(body) {
+  if (!MOCK) return normJob(await req("/api/maintenance/schedule-slot", send("POST", body)));
+  await sleep(300);
+  const job = {
+    id: nextId(db.jobs),
+    wheel_asset_id: body.wheel_asset_id,
+    train_id: body.train_id,
+    priority: "MODERATE",
+    risk_score: 55.0,
+    job_status: "SCHEDULED",
+    suggested_start: body.start_datetime,
+    suggested_end: body.end_datetime,
+    confirmed_start: body.start_datetime,
+    recommended_action: "Turnaround Servicing during Depot Window",
+    conflict_notes: [],
+  };
+  db.jobs.push(job);
+  return clone(job);
+}
+
+/* ---------- reports and work order exports ---------- */
+const authQuery = () => {
+  const t = getAuthToken();
+  return t ? `?token=${encodeURIComponent(t)}` : "";
+};
+export const getWorkOrderPdfUrl = (jobId) => `${BASE}/api/maintenance/jobs/${jobId}/work-order-pdf${authQuery()}`;
+export const getInspectionPdfUrl = (eventId) => `${BASE}/api/inspections/${eventId}/work-order-pdf${authQuery()}`;
+export const getWheelPdfUrl = (wheelId) => `${BASE}/api/fleet/wheels/${wheelId}/work-order-pdf${authQuery()}`;
+export const getJobsCsvUrl = () => `${BASE}/api/maintenance/jobs/export/csv${authQuery()}`;
+export const getWheelCsvUrl = (wheelId) => `${BASE}/api/fleet/wheels/${wheelId}/export/csv${authQuery()}`;
+
+/* ---------- automated database backups ---------- */
+export const getBackupStatus = async () => req("/api/admin/backups/status");
+export const getBackups = async () => asList(await req("/api/admin/backups"));
+export const triggerBackup = async (compress = false) => req(`/api/admin/backups?compress=${compress}&reason=dashboard_ui`, { method: "POST" });
+export const getBackupDownloadUrl = (filename) => `${BASE}/api/admin/backups/${encodeURIComponent(filename)}/download${authQuery()}`;
+export const restoreBackup = async (filename) => req(`/api/admin/backups/${encodeURIComponent(filename)}/restore`, { method: "POST" });
+export const deleteBackup = async (filename) => req(`/api/admin/backups/${encodeURIComponent(filename)}`, { method: "DELETE" });
+
+

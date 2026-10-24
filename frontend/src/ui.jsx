@@ -51,8 +51,9 @@ export function brief(o) {
 const TONE = {
   Mild: "ok", Moderate: "warn", Severe: "bad", HIGH: "ok", MEDIUM: "warn", LOW: "bad",
   Healthy: "ok", Monitor: "warn", Critical: "bad", Active: "ok", "Under Maintenance": "warn", Decommissioned: "",
+  ok: "ok", OK: "ok",
 };
-export const Badge = ({ children }) => <span className={`badge ${TONE[children] || ""}`}>{children}</span>;
+export const Badge = ({ children, tone }) => <span className={`badge ${tone || TONE[children] || ""}`}>{children}</span>;
 
 const PRIORITY = { CRITICAL: "bad", MODERATE: "warn", LOW: "ok" };
 export const Priority = ({ value }) => <span className={`badge ${PRIORITY[value] || ""}`}>{human(value)}</span>;
@@ -109,7 +110,7 @@ export const Bar = ({ value, max = 1 }) => (
 export const Hold = () => (
   <div className="hold">
     <b>Operational hold recommended</b>
-    Urgent inspection is required before the next scheduled operation. Authorised engineering staff must assess and clear this wheel. This system only recommends and flags conflicts.
+    Inspection recommended before next departure. Authorised engineering staff must assess and clear this wheelset.
   </div>
 );
 

@@ -1,6 +1,6 @@
-# Train-Wise Wheel Health Monitoring & Intelligent Maintenance Scheduling System
+# Chakraksh (चक्राक्ष) &mdash; Train-Wise Wheel Health Monitoring & Intelligent Maintenance Scheduling System
 
-> **v2.0** — Extended from the original Railway Wheel Health Assessment backend into an end-to-end Fleet Health, Computer Vision Defect Detection, and Intelligent Maintenance Scheduling Platform for railway operations.
+> **v2.0** &mdash; Extended from the original Railway Wheel Health Assessment backend into an end-to-end Fleet Health, Computer Vision Defect Detection, and Intelligent Maintenance Scheduling Platform for railway operations.
 
 ---
 
@@ -59,17 +59,19 @@ Railway_wheel_health_assessment/
 ├── detection/                       # YOLOv8 wheel defect detection model & weights
 ├── severity/                        # Defect severity categorization (Mild, Moderate, Severe)
 ├── reliability/                     # Test-Time Augmentation (TTA) prediction confidence
-├── explainability/                  # Grad-CAM heatmap visualization generator
-├── dataset/                         # Real test images and validation samples
-├── database/railway.db              # SQLite persistence layer
+├── explainability/                  # Grad-CAM / Layer-CAM heatmap visualization generator
+├── outputs/                         # Static outputs (annotated images, heatmaps, uploads)
+│   └── uploads/                     # Sample and uploaded test images
+├── database/railway.db              # SQLite persistence layer (auto-initialized)
 ├── frontend/                        # React + Vite web dashboard
-│   ├── src/                         # Dashboard, New Inspection, Wheels pages
+│   ├── src/                         # Dashboard, Trains, Inspect, Planner, Wheels pages
 │   ├── package.json                 # React 18, Vite, React Router, Recharts
-│   └── .env                         # Backend API URL configuration
+│   └── .env.example                 # Backend API URL configuration template
 └── tests/
     ├── test_fleet_system.py         # 25 pytest integration & unit tests
     ├── test_api_endpoints.py        # 64 live HTTP validation tests (error codes, validation)
-    └── verify_all_endpoints.py      # 40 live end-to-end tests (real YOLO image upload, scheduling)
+    ├── verify_all_endpoints.py      # 40 live end-to-end tests (real YOLO image upload, scheduling)
+    └── test_*.py                    # Unit tests (models, database, ID generator, history)
 ```
 
 ---
@@ -94,7 +96,7 @@ trains (id PK, train_number UNIQUE, train_name, train_type, operational_status, 
 ```
 
 ### Automatic Migration
-- Built with automatic schema migration in [`core/wheel_lifecycle/database.py`](file:///c:/Railway%20project/Railway_wheel_health_assessment/core/wheel_lifecycle/database.py).
+- Built with automatic schema migration in [`core/wheel_lifecycle/database.py`](core/wheel_lifecycle/database.py).
 - Tables and new columns (`coach_id`, `train_id`, `inspection_event_id`) are created idempotently (`IF NOT EXISTS`).
 - Prior v1.0 data remains untouched and backward-compatible.
 
@@ -131,7 +133,8 @@ The backend provides **34 active API routes**:
 ### 3.3 ML Inspection Pipeline (`main.py`)
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/api/inspect` | Upload wheel image for YOLOv8 detection, Grad-CAM, TTA reliability, and priority calculation |
+| `POST` | `/api/inspect` | Upload wheel image for ML inspection. Accepts optional `run_tta: bool = False` for high-throughput screening (~0.22s) vs full 5-pass TTA & Layer-CAM (~3.1s). |
+| `GET` | `/api/inspections/{event_id}/work-order-pdf` | Download official Work Order PDF report with defect bounding boxes and heatmap callouts |
 
 ### 3.4 Maintenance Scheduling Engine (`routers/maintenance.py`)
 | Method | Endpoint | Description |
@@ -145,6 +148,7 @@ The backend provides **34 active API routes**:
 | `POST` | `/api/maintenance/jobs/{job_id}/confirm` | Confirm maintenance slot (`PENDING` → `SCHEDULED`) with overlap validation |
 | `PATCH` | `/api/maintenance/jobs/{job_id}/status` | Update lifecycle (`SCHEDULED` → `IN_PROGRESS` → `COMPLETED` / `CANCELLED`) |
 | `GET` | `/api/maintenance/history/{wheel_asset_id}` | Complete maintenance service history for a wheel |
+| `GET` | `/api/maintenance/jobs/export/csv` | Download full fleet maintenance job log as CSV |
 
 ### 3.5 Fleet Dashboard & Core Wheel APIs (`routers/fleet_dashboard.py`, `main.py`)
 | Method | Endpoint | Description |
@@ -158,20 +162,80 @@ The backend provides **34 active API routes**:
 | `GET` | `/api/health` | Service health status and ML model readiness |
 | `GET` | `/` | Root service status |
 
+### 3.6 Automated Database Backups & Maintenance (`routers/admin_backups.py`)
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/admin/backups` | List all SQLite snapshots in the archive with sizes, timestamps, and integrity status |
+| `GET` | `/api/admin/backups/status` | Live database health, integrity check, archive storage metrics, and scheduler status |
+| `POST` | `/api/admin/backups` | Create an immediate online, lock-free SQLite snapshot (optional `compress=true`) |
+| `GET` | `/api/admin/backups/{filename}/download` | Stream and download database snapshot file (`.db` or `.db.gz`) |
+| `POST` | `/api/admin/backups/{filename}/restore` | Restore live database from snapshot with automatic pre-restore safety backup |
+| `DELETE` | `/api/admin/backups/{filename}` | Delete a snapshot from the backup archive (Admin only) |
+
 ---
 
-## 4. Live Machine Learning Inspection Pipeline
+## 4. Live Machine Learning Inspection Pipeline & Toggleable Fast Mode
 
-The `/api/inspect` endpoint executes an automated multi-stage pipeline:
+The `POST /api/inspect` endpoint features a **Toggleable High-Throughput / Deep Diagnostic Engine** configured via `run_tta: bool = False`:
 
-1. **YOLOv8 Defect Detection**: Detects wheel defects (`Shelling`, `Cracks-Scratches`, `Flat Spots`, `Flange Wear`).
-2. **Defect Severity Classification**: Computes severity scores (Mild, Moderate, Severe) per defect instance.
-3. **Test-Time Augmentation (TTA) Reliability**: Evaluates prediction stability across image transformations to assign confidence reliability (`LOW`, `MEDIUM`, `HIGH`).
-4. **Grad-CAM Explainability**: Generates visual explainability heatmaps highlighting the exact pixel regions triggering the classification.
-5. **Historical Trend Analysis**: Compares current defects against prior inspections for the same wheel (`IMPROVING`, `STABLE`, `WORSENING`).
-6. **Multi-Factor Risk Score (0–100)**:
-   $$\text{Risk Score} = \min\left(100, (\text{Defect Weight} + \text{Severity Weight} + \text{Trend Weight}) \times \text{Reliability Factor}\right)$$
-7. **Wheel Status Update**: Automatically assigns `Healthy` ($<50$), `Monitor` ($50–79$), or `Critical` ($\ge 80$) to the wheel in the database.
+```
+                             [Wheel Image Upload]
+                                      │
+                         [Single-Pass YOLOv8 Detection]
+                                      │
+                         [Severity Feature Extraction]
+                                      │
+                                      ▼
+                      ┌───────────────────────────────┐
+                      │    run_tta == False (Default) │
+                      │       Fast Screening Mode     │
+                      └───────────────┬───────────────┘
+                                      │
+                        ┌─────────────┴─────────────┐
+                        ▼                           ▼
+                 No Defects Found            Defects Detected
+                        │                           │
+                 [Healthy Wheel]            [Calibrate Confidence]
+                 (Lat: ~0.22s/wheel)        (High >=0.75, Med >=0.45, Low <0.45)
+                                                    │
+                                            [Multi-Factor Risk]
+                                                    │
+                                            [One-Click Escalate]
+                                                    │
+                                                    ▼
+                                      ┌───────────────────────────────┐
+                                      │    run_tta == True            │
+                                      │       Deep Diagnostic Mode    │
+                                      └───────────────┬───────────────┘
+                                                      │
+                                        [5-Pass TTA Forward Passes]
+                                        (Rotation, Brightness, Scale)
+                                                      │
+                                        [Layer-CAM Heatmap Synthesis]
+                                        (Pixel Activation Attribution)
+                                                      │
+                                        [Deep Diagnostic Verification]
+                                        (Lat: ~3.1s/wheel)
+```
+
+### Modes Comparison
+
+| Feature | Fast Screening Mode (`run_tta=false`) | Deep Diagnostic Mode (`run_tta=true`) |
+|---|---|---|
+| **Primary Use-Case** | Wayside pass-by screening, line ingestion | Depot verification, flagged wheel audit |
+| **Inference Latency** | **~0.22 seconds / wheel** (13.0x speedup) | **~3.10 seconds / wheel** |
+| **Defect Detection** | YOLOv8 single-pass bounding boxes | YOLOv8 single-pass bounding boxes |
+| **Severity Grading** | Area, perimeter, aspect ratio, entropy | Area, perimeter, aspect ratio, entropy |
+| **Confidence Scoring**| Deterministic threshold calibration | 5-Fold TTA Monte-Carlo spread analysis |
+| **Explainability** | Skipped for high throughput | Layer-CAM gradient attention heatmaps |
+| **Escalation Path** | 1-Click UI button re-runs with TTA + CAM | Immediate depot work-ticket PDF download |
+
+### Multi-Factor Risk Score Formula (0–100)
+$$\text{Risk Score} = \min\left(100, (\text{Defect Weight} + \text{Severity Weight} + \text{Trend Weight}) \times \text{Reliability Factor}\right)$$
+- **Defect Weights**: `Cracks-Scratches` (40), `Shelling` (35), `Discoloration` (20)
+- **Severity Weights**: `Severe` (30), `Moderate` (20), `Mild` (10)
+- **Reliability Factors**: `HIGH` (1.0), `MEDIUM` (0.85), `LOW` (0.60)
+- **Wheel Action & Status Thresholds**: `Healthy` ($<50$), `Monitor` ($50–79$), `Critical` ($\ge 80$)
 
 ---
 
@@ -331,21 +395,143 @@ GET /api/fleet/dashboard
 }
 ```
 
+### 6.5 Depot Maintenance Work Orders (PDF) & CSV Exports
+
+Depot engineers can download comprehensive, publication-ready PDF work tickets with railway branding, dual-panel computer vision imagery, defect itemization, scheduling feasibility analysis, and RDSO sign-off checklists:
+
+```bash
+# Download Maintenance Work Order PDF for a specific job
+GET /api/maintenance/jobs/{job_id}/work-order-pdf
+
+# Download Work Order / Assessment PDF for an inspection event
+GET /api/inspections/{event_or_inspection_id}/work-order-pdf
+
+# Download Wheel Assessment PDF
+GET /api/fleet/wheels/{wheel_asset_id}/work-order-pdf
+
+# Export all fleet maintenance jobs to CSV spreadsheet
+GET /api/maintenance/jobs/export/csv
+
+# Export defect inspection history for a specific wheel as CSV
+GET /api/fleet/wheels/{wheel_asset_id}/export/csv
+```
+
+**Work Order PDF Contents:**
+1. **Header & Metadata**: Official Indian Railways Rolling Stock Department header, work order number, status, and urgency priority banner.
+2. **Asset Hierarchy**: Train number/name, coach number/type, wheel asset ID, axle number, wheel position, and depot base.
+3. **Health Diagnostics**: Overall risk score, degradation trend status, recommended action, and TTA model reliability score.
+4. **Defect Itemization Table**: Defect classes, severity grades, confidence scores, and recommended repair actions.
+5. **Computer Vision Visuals**: Dual-panel side-by-side callouts showing **Figure A: YOLOv8 defect bounding boxes** and **Figure B: Layer-CAM deep backbone attention heatmaps**.
+6. **Depot Scheduling & Operational Feasibility**: Scheduled window, clearance requirement, and operating schedule conflict notes.
+7. **Execution Checklist & Sign-Off**: RDSO-compliant sign-off blocks for inspecting engineer, employee ID, foreman signature, and release date.
+
+### 6.6 Authentication & Role-Based Access Control (RBAC)
+
+The system enforces hierarchical Role-Based Access Control (RBAC) powered by JSON Web Tokens (JWT, HS256) and API Key credentials:
+
+```bash
+# Authenticate with credentials and receive JWT Bearer access token
+POST /api/auth/login
+
+# Get current user profile and active permissions
+GET  /api/auth/me
+
+# List available role specifications & permissions hierarchy
+GET  /api/auth/roles
+
+# List registered system users (Admin only)
+GET  /api/auth/users
+
+# Create a new user (Admin only)
+POST /api/auth/users
+```
+
+#### Roles & Permissions Matrix
+
+| Role | Hierarchy Level | Pre-Seeded Account | Description & Allowed Operations |
+|---|:---:|---|---|
+| **`OPERATOR`** | 1 | `operator` / `oper123`<br>`X-API-Key: opr-key-secret-777` | **Wayside Inspection Operator**: View fleet assets, trains, coaches, wheels, operating schedules; submit wheel inspection images (`POST /api/inspect`); download Work Order PDFs and CSV spreadsheets. |
+| **`MAINTENANCE_SUPERVISOR`** | 2 | `supervisor` / `super123`<br>`X-API-Key: sup-key-secret-888` | **Depot Maintenance Supervisor**: All `OPERATOR` permissions + generate intelligent maintenance recommendations (`POST /api/maintenance/recommend/{wheel_id}`), confirm maintenance slots (`POST /api/maintenance/jobs/{id}/confirm`), and update job status (`PATCH /api/maintenance/jobs/{id}/status`). |
+| **`ADMIN`** | 3 | `admin` / `admin123`<br>`X-API-Key: adm-key-secret-999` | **Chief Rolling Stock Engineer / Admin**: Full system access: register trains, add coaches, register wheels under coaches, create/update operating schedules, and manage user accounts. |
+
+#### Authentication Methods
+1. **JWT Bearer Token**: Pass header `Authorization: Bearer <token>` returned by `/api/auth/login`.
+2. **X-API-Key Header**: Pass `X-API-Key: <key>` (ideal for automated wayside imaging scanners and CLI scripts).
+3. **Query Parameter**: Pass `?token=<jwt>` or `?api_key=<key>` (built into direct browser links for one-click PDF and CSV downloads).
+
+### 6.7 Automated SQLite Database Backups & Online Snapshots
+
+The system features an automated, lock-free SQLite online backup routine using Python's native `sqlite3.Connection.backup()` API:
+
+```bash
+# 1. Trigger an immediate online backup snapshot via REST API (Supervisor / Admin)
+POST /api/admin/backups?compress=false
+
+# 2. List all backup snapshots in the archive
+GET  /api/admin/backups
+
+# 3. Check storage overview and scheduler status
+GET  /api/admin/backups/status
+
+# 4. Download a backup snapshot file (.db or .db.gz)
+GET  /api/admin/backups/{filename}/download
+
+# 5. Restore live database from a snapshot (Admin only, pre-restore safety snapshot taken automatically)
+POST /api/admin/backups/{filename}/restore
+
+# 6. Delete an old snapshot (Admin only)
+DELETE /api/admin/backups/{filename}
+```
+
+#### Standalone CLI & Cron Script
+Run backups directly from cron, Windows Task Scheduler, or CI/CD pipelines without touching HTTP:
+
+```bash
+# Create an online snapshot
+python scripts/backup_db.py
+
+# Create a gzip-compressed snapshot (.db.gz)
+python scripts/backup_db.py --compress
+
+# Custom retention limit (keeps last 30 snapshots, prunes older)
+python scripts/backup_db.py --keep 30
+
+# List all snapshots in the archive
+python scripts/backup_db.py --list
+
+# Restore database from snapshot
+python scripts/backup_db.py --restore railway_backup_20261024_030003_299707.db
+```
+
+#### Background Scheduler Configuration (Environment Variables)
+- `BACKUP_INTERVAL_MINUTES`: Frequency in minutes (default: `360` = every 6 hours).
+- `BACKUP_MAX_RETAINED`: Maximum snapshots retained before pruning oldest (default: `20`).
+- `BACKUP_ON_STARTUP`: Take an automated safety snapshot on server boot (default: `True`).
+
 ---
 
 ## 7. Frontend Integration & UI Application
 
 The `frontend/` directory contains a single-page React application built with **Vite**, **React 18**, **React Router v6**, and **Recharts**.
 
-### Features
-- **Fleet Dashboard**: Visual gauges, healthy/monitor/critical wheel metrics, and upcoming maintenance schedules.
-- **New Inspection**: Drag-and-drop wheel image upload with live YOLO bounding boxes and Grad-CAM overlays.
-- **Wheels Explorer**: Search, filter, and view historical defect degradation curves.
+### 5 Dedicated Pages & Features
+- **Fleet Dashboard (`Dashboard.jsx`)**: Visual gauges, healthy/monitor/critical wheel counts, train condition breakdown, upcoming maintenance timeline, and schedule conflict alerts.
+- **Train Registry & Schedules (`Trains.jsx`)**: Hierarchical Train $\rightarrow$ Coach $\rightarrow$ Axle Wheel registration, role-guarded mutation controls (`🔒 Requires Admin`), and interactive 7-day visual operating vs. maintenance window availability lanes.
+- **New Inspection (`Inspect.jsx`)**: Drag-and-drop wheel image upload with live inference progression, YOLO bounding box detection plot, and Layer-CAM attention heatmap overlay.
+- **Maintenance Planner (`Planner.jsx`)**: Priority maintenance job queue (`CRITICAL`, `MODERATE`, `LOW`), operational clearance hold banners, collision-free slot confirmations (`🔒 Supervisor Role`), and PDF work ticket downloads.
+- **Wheel History (`Wheels.jsx`)**: Searchable wheel directory with historical defect timeline, risk score degradation curves, PDF report downloads, and live **Automated Database Backups & Archive Management Panel**.
+- **RBAC Role Switcher Widget**: Persistent sidebar switcher allowing live switching between `ADMIN`, `MAINTENANCE_SUPERVISOR`, and `OPERATOR` sessions directly in the browser.
 
 ### Running the Frontend
 ```bash
 cd frontend
+# 1. Install dependencies
 npm install
+
+# 2. Configure environment (copy template)
+copy .env.example .env    # On Windows (or cp .env.example .env on Linux/macOS)
+
+# 3. Start local development server
 npm run dev
 ```
 Open **http://localhost:5173** in your browser.
@@ -358,16 +544,18 @@ Open **http://localhost:5173** in your browser.
 
 ---
 
-## 8. Testing & Verification Suites (129 Tests)
+## 8. Testing & Verification Suites (164 Tests)
 
-The system features three comprehensive automated test suites with a **100% pass rate (129/129)**:
+The system features automated test suites with a **100% pass rate (164/164)**:
 
 | Test Suite File | Type | Test Count | Scope |
 |---|---|:---:|---|
-| [`tests/verify_all_endpoints.py`](file:///c:/Railway%20project/Railway_wheel_health_assessment/tests/verify_all_endpoints.py) | **End-to-End Live** | **40** | Multipart image upload, live YOLOv8 + Grad-CAM, priority scheduling, conflict detection, full job lifecycle, and dashboard metrics. |
-| [`tests/test_api_endpoints.py`](file:///c:/Railway%20project/Railway_wheel_health_assessment/tests/test_api_endpoints.py) | **Live HTTP** | **64** | Field-level validation, 404/409/422 status code validation, duplicate rejection, and filtering across all 34 routes. |
-| [`tests/test_fleet_system.py`](file:///c:/Railway%20project/Railway_wheel_health_assessment/tests/test_fleet_system.py) | **Pytest Unit / Integration** | **25** | Database foreign keys, hierarchy integrity, trend aggregation, scheduler logic, and job status transitions. |
-| **Total** | | **129** | **All 129 Passed** |
+| [`tests/verify_all_endpoints.py`](tests/verify_all_endpoints.py) | **End-to-End Live** | **46** | RBAC login, token verification, role restriction enforcement, multipart image upload, live YOLOv8 + Grad-CAM, priority scheduling, conflict detection, full job lifecycle, and dashboard metrics. |
+| [`tests/test_api_endpoints.py`](tests/test_api_endpoints.py) | **Live HTTP** | **78** | JWT authentication, role rejection testing (401/403), database backup API, field-level validation, 404/409/422 status code validation, duplicate rejection, and filtering across all routes. |
+| [`tests/test_fleet_system.py`](tests/test_fleet_system.py) | **Pytest Unit / Integration** | **25** | Database foreign keys, hierarchy integrity, trend aggregation, scheduler logic, and job status transitions. |
+| [`tests/test_database_backup.py`](tests/test_database_backup.py) | **Backup & Restore** | **9** | SQLite online backup API, PRAGMA integrity verification, gzip compression, retention pruning, RBAC permissions, binary download, and transactional restore with safety snapshots. |
+| [`tests/test_fast_mode.py`](tests/test_fast_mode.py) | **Benchmark & Integration** | **6** | Toggleable Fast Mode (`run_tta=false`) vs Deep Diagnostic Mode (`run_tta=true`), single-pass confidence calibration, 13x latency benchmark, and PDF work order generation. |
+| **Total Core Suites** | | **164** | **All 164 Passed (100%)** |
 
 ### Run the Tests
 
@@ -375,10 +563,16 @@ The system features three comprehensive automated test suites with a **100% pass
 # 1. Run live end-to-end ML & scheduling verification (against running server)
 python tests/verify_all_endpoints.py
 
-# 2. Run 64 live HTTP validation tests
+# 2. Run 78 live HTTP validation & RBAC tests
 python tests/test_api_endpoints.py
 
-# 3. Run pytest unit test suite
+# 3. Run SQLite database backup & restore test suite
+python tests/test_database_backup.py
+
+# 4. Run Fast Mode vs Deep Diagnostic Mode benchmark tests
+python tests/test_fast_mode.py
+
+# 5. Run pytest unit test suite
 python -m pytest tests/test_fleet_system.py -v
 ```
 

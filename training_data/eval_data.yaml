@@ -1,0 +1,7 @@
+path: D:/Railway_wheel_health_assessment/training_data/Labeled_data_TXT
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 4
+names: ['Cracks-Scratches', 'Discoloration', 'Shelling', 'Wheel']

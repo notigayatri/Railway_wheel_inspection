@@ -38,7 +38,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # ── FastAPI / Starlette ───────────────────────────────────────────────────────
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Path as FPath
+from fastapi import FastAPI, Depends, File, Form, UploadFile, HTTPException, Path as FPath, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -67,10 +67,14 @@ from core.wheel_lifecycle.dashboard import Dashboard
 from core.wheel_lifecycle.fleet_repository import FleetRepository
 
 # ── New routers ───────────────────────────────────────────────────────────────
+from routers.auth import router as auth_router
 from routers.trains import router as trains_router
 from routers.schedules import router as schedules_router
 from routers.maintenance import router as maintenance_router
 from routers.fleet_dashboard import router as fleet_dashboard_router
+from routers.admin_backups import router as backups_router
+from core.wheel_lifecycle.auth import require_role, ROLE_OPERATOR
+from core.wheel_lifecycle.backup import start_backup_scheduler, stop_backup_scheduler
 
 
 # ── Static output directories ─────────────────────────────────────────────────
@@ -87,14 +91,14 @@ for _d in (ANNOTATED_DIR, GRADCAM_DIR, UPLOADS_DIR):
 # ═════════════════════════════════════════════════════════════════════════════
 
 app = FastAPI(
-    title="Train-Wise Wheel Health Monitoring & Intelligent Maintenance Scheduling",
+    title="Chakraksh — Railway Wheel Health Assessment & Intelligent Fleet Maintenance",
     description=(
-        "REST API for AI-powered railway wheel defect detection, severity "
-        "assessment, reliability scoring, Grad-CAM explainability, "
+        "Chakraksh (चक्राक्ष) — Enterprise REST API for AI-powered railway wheel defect detection, "
+        "severity assessment, reliability scoring, Layer-CAM explainability, "
         "maintenance priority calculation, and intelligent maintenance scheduling. "
         "\n\n**New in v2.0:** Train registration, coach/wheel hierarchy, "
-        "operating schedule management, inspection event grouping, and "
-        "automated maintenance recommendations."
+        "operating schedule management, inspection event grouping, "
+        "automated maintenance recommendations, and automated database backups."
     ),
     version="2.0.0",
     docs_url="/docs",
@@ -117,11 +121,27 @@ app.mount(
     name="outputs",
 )
 
-# ── Register new routers ──────────────────────────────────────────────────────
+# ── Register routers ──────────────────────────────────────────────────────────
+app.include_router(auth_router)
 app.include_router(trains_router)
 app.include_router(schedules_router)
 app.include_router(maintenance_router)
 app.include_router(fleet_dashboard_router)
+app.include_router(backups_router)
+
+
+# ── Background Backup Scheduler Lifecycle ─────────────────────────────────────
+@app.on_event("startup")
+async def on_startup():
+    """Start automated periodic SQLite database backup scheduler."""
+    start_backup_scheduler()
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Gracefully cancel and terminate backup scheduler."""
+    stop_backup_scheduler()
+
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -173,6 +193,7 @@ class InspectionResponse(BaseModel):
     annotated_image_url: Optional[str]  = Field(None, description="URL to annotated detection image")
     gradcam_image_url: Optional[str]    = Field(None, description="URL to Grad-CAM heatmap image")
     processing_time_seconds: float
+    run_tta: bool                       = Field(False, description="Whether 5-pass TTA and Layer-CAM were executed")
 
 
 class WheelSummary(BaseModel):
@@ -305,8 +326,31 @@ async def inspect_wheel(
             "The inspection event is linked to the coach's train."
         ),
     ),
+    run_tta: bool = Query(
+        False,
+        description="Toggle 5-pass Test-Time Augmentation (TTA) and Layer-CAM explainability. Default is False for rapid wayside pass-by screening (~0.4s). Set to True for deep diagnostic analysis of borderline/flagged wheels.",
+    ),
+    run_tta_form: Optional[bool] = Form(
+        None,
+        alias="run_tta",
+        description="Alternative form-data parameter for run_tta",
+    ),
+    skip_wheel_check: bool = Query(
+        False,
+        description="Override to bypass wheel presence validation (for specialized test harnesses)",
+    ),
+    current_user: dict = Depends(require_role(ROLE_OPERATOR)),
 ):
     t_start = time.perf_counter()
+
+    # ── 0. Resolve run_tta toggle (Query param takes precedence over form) ──
+    if run_tta_form is not None:
+        if isinstance(run_tta_form, str):
+            should_run_tta = run_tta_form.lower() in ("true", "1", "yes")
+        else:
+            should_run_tta = bool(run_tta_form)
+    else:
+        should_run_tta = bool(run_tta)
 
     # ── 0. Sanitize wheel_id ──────────────────────────────────────────────
     # Swagger UI sends the literal placeholder "string" when the user
@@ -347,7 +391,36 @@ async def inspect_wheel(
         upload_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="Uploaded file is not a valid image.")
 
-    # ── 3. Wheel record — look up or create ───────────────────────────────
+    # ── 3. YOLOv8 detection + severity (per-instance) ─────────────────────
+    try:
+        detections, yolo_result = predict_image_detailed(upload_path)
+    except Exception as exc:
+        upload_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Inference failed: {exc}")
+
+    # ── 4. Railway Wheel Domain Verification (Out-of-Distribution Guard) ──
+    wheel_confidences = []
+    if yolo_result.boxes is not None and len(yolo_result.boxes) > 0:
+        for box in yolo_result.boxes:
+            cls_id = int(box.cls[0])
+            cls_name = yolo_result.names.get(cls_id, "")
+            if cls_name == "Wheel":
+                conf = float(box.conf[0])
+                if conf >= 0.25:
+                    wheel_confidences.append(conf)
+
+    if not wheel_confidences and not skip_wheel_check:
+        upload_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No railway wheel detected in the uploaded image. "
+                "The inspection model requires a clear trackside or depot photograph of a train wheel. "
+                "Non-railway images (e.g. people, landscapes, general objects) cannot be assessed."
+            ),
+        )
+
+    # ── 5. Wheel record — look up or create (only reached for genuine wheels) ──
     repo = WheelRepository()
 
     if wheel_id:
@@ -382,15 +455,9 @@ async def inspect_wheel(
         )
         repo.create_wheel(new_wheel)
 
-    # ── 4. Retrieve prior history BEFORE saving this inspection ───────────
+    # ── 6. Retrieve prior history BEFORE saving this inspection ───────────
     prior_history = repo.get_history(asset_id)
     has_prior_history = len(prior_history) > 0
-
-    # ── 5. YOLOv8 detection + severity (per-instance) ─────────────────────
-    try:
-        detections, yolo_result = predict_image_detailed(upload_path)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Inference failed: {exc}")
 
     # ── 6. Save annotated detection image ─────────────────────────────────
     annotated_path: Optional[str] = None
@@ -405,21 +472,24 @@ async def inspect_wheel(
     except Exception:
         pass  # annotated image is non-critical
 
-    # ── 7. Grad-CAM ────────────────────────────────────────────────────────
+    # ── 7. Grad-CAM / Layer-CAM (reserved for full TTA mode) ─────────────
     gradcam_path: Optional[str] = None
     gradcam_url: Optional[str] = None
-    try:
-        gc_out = generate_gradcam(upload_path, output_path=GRADCAM_DIR / image.filename)
-        gradcam_path = str(gc_out)
-        gradcam_url = _url_for_file(gradcam_path)
-    except Exception:
-        pass  # Grad-CAM is non-critical; do not fail the whole request
+    if should_run_tta:
+        try:
+            gc_out = generate_gradcam(upload_path, output_path=GRADCAM_DIR / image.filename)
+            gradcam_path = str(gc_out)
+            gradcam_url = _url_for_file(gradcam_path)
+        except Exception:
+            pass  # Grad-CAM is non-critical; do not fail the whole request
 
-    # ── 8. TTA Reliability ────────────────────────────────────────────────
-    try:
-        reliability_results = calculate_reliability(upload_path)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Reliability calculation failed: {exc}")
+    # ── 8. TTA Reliability (5 forward passes, skipped in Fast Mode) ───────
+    reliability_results = {}
+    if should_run_tta:
+        try:
+            reliability_results = calculate_reliability(upload_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Reliability calculation failed: {exc}")
 
     # ── 9. Maintenance priority — per defect ──────────────────────────────
     from maintenance_priority.config import (
@@ -442,7 +512,15 @@ async def inspect_wheel(
         rel_info = reliability_results.get(label, {})
         mean_conf    = rel_info.get("mean_confidence", confidence)
         std_dev      = rel_info.get("std_deviation", 0.0)
-        reliability  = rel_info.get("reliability", "MEDIUM")
+        reliability  = rel_info.get("reliability")
+        if not reliability:
+            # Deterministic baseline calibration for fast screening mode:
+            if confidence >= 0.75:
+                reliability = "HIGH"
+            elif confidence >= 0.45:
+                reliability = "MEDIUM"
+            else:
+                reliability = "LOW"
 
         # Trend calculation: compared STRICTLY per defect type
         trend_weight, trend_note, defect_trend = calculate_defect_trend(
@@ -601,6 +679,7 @@ async def inspect_wheel(
         annotated_image_url=annotated_url,
         gradcam_image_url=gradcam_url,
         processing_time_seconds=t_elapsed,
+        run_tta=should_run_tta,
     )
 
 

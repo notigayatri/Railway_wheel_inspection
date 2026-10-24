@@ -13,12 +13,12 @@ function Chart({ title, data, colors }) {
       <h2>{title}</h2>
       <ResponsiveContainer width="100%" height={220}>
         <BarChart data={data} margin={{ left: -20 }}>
-          <CartesianGrid vertical={false} stroke="#DDE6E4" />
+          <CartesianGrid vertical={false} stroke="#dee2de" />
           <XAxis dataKey="name" tickLine={false} />
           <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
-          <Tooltip cursor={{ fill: "#EAF1EF" }} />
+          <Tooltip cursor={{ fill: "#f9faf7" }} />
           <RBar dataKey="value" radius={[2, 2, 0, 0]}>
-            {data.map((d) => <Cell key={d.name} fill={colors?.[d.name] || "#2F7F79"} />)}
+            {data.map((d) => <Cell key={d.name} fill={colors?.[d.name] || "#48807a"} />)}
           </RBar>
         </BarChart>
       </ResponsiveContainer>
@@ -54,17 +54,17 @@ export default function Dashboard() {
 
   return (
     <>
-      <header className="hero">
-        <div><h1>Fleet overview</h1><p>Health of every train, coach and wheel, with maintenance planned around the operating schedule.</p></div>
-        <svg className="hero-art" viewBox="0 0 220 160" aria-hidden="true">
-          {[70, 50, 30].map((r) => <circle key={r} cx="110" cy="80" r={r} fill="none" stroke="#fff" strokeOpacity={r / 200} strokeWidth="2" />)}
-          <path className="pulse" d="M10 84h50l14-34 20 70 16-44 12 8h88" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+      <header className="page-header">
+        <div>
+          <span className="eyebrow">FLEET TELEMETRY & OPERATIONS</span>
+          <h1>Fleet Overview</h1>
+          <p>Real-time health assessment of every train, coach, and wheelset with maintenance schedules deconflicted around operational runs.</p>
+        </div>
       </header>
 
       {f.critical_wheels > 0 && (
         <div className="alert reveal" role="alert">
-          <div><b>{f.critical_wheels} critical wheel{f.critical_wheels === 1 ? "" : "s"} flagged.</b> Urgent inspection and an operational hold are recommended until engineering staff clear them.</div>
+          <div><b>{f.critical_wheels} critical wheel{f.critical_wheels === 1 ? "" : "s"} flagged.</b> Inspection recommended prior to departure; operational hold flagged for engineering review.</div>
           <Link className="ghost" to="/planner">Open planner</Link>
         </div>
       )}

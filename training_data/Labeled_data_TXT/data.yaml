@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 4
+names: ['Cracks-Scratches', 'Discoloration', 'Shelling', 'Wheel']
+
+roboflow:
+  workspace: ncraai-mehran-university-of-engineering-and-technology-jamshoro-and-university-of-malaga-spain
+  project: wheel-defect-detection-e53jb
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/ncraai-mehran-university-of-engineering-and-technology-jamshoro-and-university-of-malaga-spain/wheel-defect-detection-e53jb/dataset/3

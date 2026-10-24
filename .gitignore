@@ -15,6 +15,11 @@ __pycache__/
 *.pt
 !models/best.pt
 
-database/railway.db
-
+database/*.db
+database/backups/
 outputs/gradcam/
+outputs/uploads/
+outputs/reports/
+node_modules/
+dist/
+.env.local

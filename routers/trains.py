@@ -24,13 +24,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Path as FPath
+from fastapi import APIRouter, Depends, HTTPException, Path as FPath
 from pydantic import BaseModel, Field
 
 from core.wheel_lifecycle.fleet_repository import FleetRepository
 from core.wheel_lifecycle.repository import WheelRepository
 from core.wheel_lifecycle.models import Wheel
 from core.wheel_lifecycle.id_generator import generate_asset_id
+from core.wheel_lifecycle.auth import require_role, ROLE_ADMIN
 
 router = APIRouter(prefix="/api", tags=["Trains & Coaches"])
 
@@ -123,7 +124,10 @@ def _coach_or_404(repo: FleetRepository, coach_id: int):
     summary="Register a new train",
     description="Create a new train record. Train numbers must be unique.",
 )
-def register_train(body: TrainCreate):
+def register_train(
+    body: TrainCreate,
+    current_user: dict = Depends(require_role(ROLE_ADMIN)),
+):
     repo = FleetRepository()
     if repo.get_train_by_number(body.train_number):
         raise HTTPException(
@@ -169,6 +173,7 @@ def get_train(train_id: int = FPath(..., description="Internal train ID")):
 def update_train(
     body: TrainUpdate,
     train_id: int = FPath(..., description="Internal train ID"),
+    current_user: dict = Depends(require_role(ROLE_ADMIN)),
 ):
     repo = FleetRepository()
     _train_or_404(repo, train_id)
@@ -194,6 +199,7 @@ def update_train(
 def add_coach(
     body: CoachCreate,
     train_id: int = FPath(..., description="Internal train ID"),
+    current_user: dict = Depends(require_role(ROLE_ADMIN)),
 ):
     repo = FleetRepository()
     _train_or_404(repo, train_id)
@@ -238,6 +244,38 @@ def get_coach(
     return CoachResponse(**coach)
 
 
+@router.delete(
+    "/trains/{train_id}/coaches/{coach_id}",
+    summary="Delete a coach from a train",
+)
+def delete_coach(
+    train_id: int = FPath(...),
+    coach_id: int = FPath(...),
+    current_user: dict = Depends(require_role(ROLE_ADMIN)),
+):
+    repo = FleetRepository()
+    _train_or_404(repo, train_id)
+    coach = _coach_or_404(repo, coach_id)
+    if coach["train_id"] != train_id:
+        raise HTTPException(status_code=400, detail="Coach does not belong to this train.")
+    success = repo.delete_coach(coach_id)
+    return {"success": success, "message": f"Coach {coach['coach_number']} deleted successfully."}
+
+
+@router.delete(
+    "/coaches/{coach_id}",
+    summary="Delete a coach directly",
+)
+def delete_coach_direct(
+    coach_id: int = FPath(...),
+    current_user: dict = Depends(require_role(ROLE_ADMIN)),
+):
+    repo = FleetRepository()
+    coach = _coach_or_404(repo, coach_id)
+    success = repo.delete_coach(coach_id)
+    return {"success": success, "message": f"Coach {coach['coach_number']} deleted successfully."}
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # WHEEL ENDPOINTS (within a coach)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -267,6 +305,7 @@ def list_wheels_in_coach(coach_id: int = FPath(..., description="Internal coach 
 def register_wheel_in_coach(
     body: WheelRegisterRequest,
     coach_id: int = FPath(..., description="Internal coach ID"),
+    current_user: dict = Depends(require_role(ROLE_ADMIN)),
 ):
     fleet_repo = FleetRepository()
     coach = _coach_or_404(fleet_repo, coach_id)

@@ -115,6 +115,11 @@ if __name__ == "__main__":
     print(results)
 
 
+def _boxes_overlap(b1, b2):
+    """Check if bounding box b1 [x1, y1, x2, y2] intersects with b2 [x1, y1, x2, y2]."""
+    return not (b1[2] < b2[0] or b1[0] > b2[2] or b1[3] < b2[1] or b1[1] > b2[3])
+
+
 def predict_image_detailed(image_path):
     """
     Extended version of predict_image() for the FastAPI backend.
@@ -148,11 +153,17 @@ def predict_image_detailed(image_path):
 
     detections = []
 
-    if yolo_result.masks is None:
+    if yolo_result.masks is None or yolo_result.boxes is None:
         return detections, yolo_result
 
     masks = yolo_result.masks.data.cpu().numpy()
     boxes = yolo_result.boxes
+
+    # Identify all detected Wheel bounding boxes
+    wheel_boxes = []
+    for j, b in enumerate(boxes):
+        if yolo_result.names[int(b.cls[0])] == "Wheel":
+            wheel_boxes.append(b.xyxy[0].cpu().numpy())
 
     for i, mask in enumerate(masks):
         cls = int(boxes.cls[i])
@@ -160,6 +171,13 @@ def predict_image_detailed(image_path):
 
         if label == "Wheel":
             continue
+
+        # Spatial containment constraint:
+        # If wheels were detected in the image, defect must physically overlap with at least one wheel
+        if wheel_boxes:
+            defect_box = boxes.xyxy[i].cpu().numpy()
+            if not any(_boxes_overlap(defect_box, wb) for wb in wheel_boxes):
+                continue
 
         conf = round(float(boxes.conf[i]), 3)
         features = extract_features(mask)
